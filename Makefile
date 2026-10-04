@@ -10,7 +10,7 @@ LOAD_PATH = -L . -L lisp -L tests -L $(PROVIDER_ROOT)/etaf -L $(PROVIDER_ROOT)/e
 
 SOURCES = $(wildcard lisp/*.el) etaf-telega.el
 
-.PHONY: compile load test check structure-check clean
+.PHONY: compile load test check structure-check clean acceptance api-check setup-hooks
 
 compile:
 	rm -f *.elc lisp/*.elc tests/*.elc
@@ -24,19 +24,21 @@ load: compile
 		--eval '(require (quote etaf-telega))' \
 		--eval '(princ "etaf-telega load OK\n")'
 
-test:
-	$(EMACS) -Q --batch $(LOAD_PATH) \
-		--eval '(setq load-prefer-newer t)' \
-		--eval '(require (quote etaf-telega-tests))' \
-		--eval '(ert-run-tests-batch-and-exit)'
+test: acceptance
 
-check: structure-check compile test
+acceptance:
+	python3 scripts/run-acceptance.py --emacs "$(EMACS)"
+
+api-check:
+	$(EMACS) -Q --batch $(LOAD_PATH) --eval '(setq load-prefer-newer t)' -l scripts/check-api.el
+
+check: structure-check compile acceptance api-check
 
 structure-check:
-	@test -f etaf-telega.el || { echo "缺少入口 etaf-telega.el"; exit 1; }
-	@test -f tests/acceptance.json || { echo "缺少 tests/acceptance.json"; exit 1; }
-	@test -n "$(PROVIDER_ROOT)" || { echo "找不到 provider（../etaf 或 ../../etaf）"; exit 1; }
-	@echo "etaf-telega structure OK"
+	python3 scripts/check-repository.py
+
+setup-hooks:
+	git config --local core.hooksPath .githooks
 
 clean:
 	rm -f *.elc lisp/*.elc tests/*.elc

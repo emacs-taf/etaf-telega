@@ -54,12 +54,23 @@
 ;; Variable: etaf-telega-backend-create-function
 ;; Return a fresh backend for `etaf-telega-open'.  Bind it to a fake backend
 ;; factory for tests and offline demonstrations.
+;; Function: etaf-telega-backend-fake-create (&key chats histories responder)
+;; Return an offline backend seeded with CHATS and HISTORIES.  RESPONDER, when
+;; non-nil, is called with (BACKEND TEXT) after each send so a caller can
+;; acknowledge through `etaf-telega-backend-fake-complete'.
+;; Function: etaf-telega-backend-fake-sent (backend)
+;; Return, newest first, the texts BACKEND accepted but has not confirmed.
+;; Function: etaf-telega-backend-fake-complete (backend text)
+;; Confirm TEXT as accepted by BACKEND, exactly like a server acknowledgement.
+;; Function: etaf-telega-backend-fake-deliver (backend message)
+;; Report MESSAGE as newly arrived in BACKEND's selected chat.
 ;; Variable: etaf-telega-buffer-name
 ;; Buffer name of the mounted client.
 
 ;;; Code:
 
 (require 'etaf-telega-app)
+(require 'etaf-telega-backend)
 
 (provide 'etaf-telega)
 ;;; etaf-telega.el ends here

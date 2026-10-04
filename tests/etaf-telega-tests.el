@@ -14,7 +14,6 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'etaf-telega)
-(require 'etaf-telega-backend)
 
 (defun etaf-telega-test--backend (&optional responder)
   "Return a fake backend with two chats and one loaded history."
