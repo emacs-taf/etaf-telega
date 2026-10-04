@@ -22,6 +22,18 @@
     (:ok . "#3fb950"))
   "Semantic palette of the application.")
 
+(defconst etaf-telega-sender-colors
+  '("#f778ba" "#79c0ff" "#d2a8ff" "#7ee787" "#ffa657" "#ff7b72" "#a5d6ff" "#e3b341")
+  "Stable sender colors for incoming messages and avatars.")
+
+(defun etaf-telega-sender-color (name)
+  "Return the stable display color for sender NAME."
+  (let ((hash 0))
+    (dolist (char (string-to-list (or name "")))
+      (setq hash (mod (+ (* hash 31) char) 1000003)))
+    (nth (mod hash (length etaf-telega-sender-colors))
+         etaf-telega-sender-colors)))
+
 (defun etaf-telega-color (key)
   "Return the palette color for KEY."
   (or (alist-get key etaf-telega-palette)

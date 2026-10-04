@@ -96,6 +96,11 @@
       "purpose": "Loading an older page prepends it before the loaded history and keeps the selection."
     },
     {
+      "name": "etaf-telega-tests-day-separators-group-messages",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Messages from different days are drawn under their day labels."
+    },
+    {
       "name": "etaf-telega-tests-opening-a-chat-reads-its-newest-page",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "Opening a chat accepts its newest page as read."

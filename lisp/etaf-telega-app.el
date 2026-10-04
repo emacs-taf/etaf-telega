@@ -355,7 +355,8 @@ available as the next draft."
       (use-local-map etaf-telega-mode-map)
       (setq-local emulation-mode-map-alists
                   (cons 'etaf-telega--command-maps emulation-mode-map-alists)))
-    (pop-to-buffer buffer)
+    ;; The client owns the current window; never let display-buffer split it.
+    (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
       (etaf-mount buffer (etaf-telega-view etaf-telega--model (etaf-telega--width))
                   (list :viewport-width (window-body-width (etaf-telega--window) t)

@@ -45,19 +45,18 @@
         (concat (truncate-string-to-width line (max 1 (- limit 1))) "…")
       line)))
 
-(defun etaf-telega--message-text (message width)
-  "Return MESSAGE's wrapped display text at WIDTH, with its sender prefix."
-  (let* ((prefix (format "%s %s: "
-                         (if (plist-get message :outgoing) "我"
-                           (or (plist-get message :sender) "?"))
-                         (or (plist-get message :time) "--:--")))
-         (body (concat (or (plist-get message :text) "")
-                       (if (plist-get message :edited) "（已编辑）" ""))))
-    (let (lines)
-      (dolist (line (etaf-telega--wrap body (max 8 (- width (string-width prefix)))))
-        (push (concat prefix line) lines)
-        (setq prefix (make-string (string-width prefix) ?\s)))
-      (mapconcat #'identity (nreverse lines) "\n"))))
+(defun etaf-telega--initial (title)
+  "Return TITLE's avatar initial."
+  (let ((title (or title "")))
+    (if (string-empty-p title) "?" (upcase (substring title 0 1)))))
+
+(defun etaf-telega--message-body (message width)
+  "Return MESSAGE's wrapped body text at WIDTH, indented under its header."
+  (let ((body (concat (or (plist-get message :text) "")
+                      (if (plist-get message :edited) "（已编辑）" ""))))
+    (mapconcat (lambda (line) (concat "  " line))
+               (etaf-telega--wrap body (max 8 (- width 2)))
+               "\n")))
 
 (defun etaf-telega--message-entries (messages selected width)
   "Return message views for MESSAGES at WIDTH, highlighting SELECTED id."
@@ -65,7 +64,7 @@
     (dolist (message messages)
       (let ((date (plist-get message :date)))
         (when (and date (not (equal date last-date)))
-          (push (etaf-view (etaf-telega-day-separator :label date)) entries)
+          (push (etaf-view (etaf-telega-day-separator :label date :width width)) entries)
           (setq last-date date)))
       (push (etaf-view (etaf-telega-message-row
                         :key (plist-get message :id)
@@ -85,34 +84,54 @@
       ('edit (format "编辑消息：%s　C-c C-k 取消编辑"
                      (etaf-telega--one-line (plist-get target :text) 40))))))
 
+(etaf-define-component etaf-telega-avatar (&key title)
+  "Render a two-cell avatar block for TITLE."
+  :view
+  (flex :width '(ch 2) :height '(lh 2) :align-items 'center :justify-content 'center
+        :background-color (etaf-telega-sender-color title)
+    (text :color (etaf-telega-color :bg) :font-weight 'bold
+          (expr (etaf-telega--initial title)))))
+
 (etaf-define-component etaf-telega-chat-row (&key chat selected)
   "Render one CHAT row; pressing it selects the chat."
   :view
-  (flex :flex-direction 'column :width 'stretch
-        :padding '((lh 0) (ch 1))
+  (flex :flex-direction 'row :align-items 'center :width 'stretch
+        :padding '((lh 0) (ch 1)) :column-gap '(ch 1)
         :background-color (if selected (etaf-telega-color :accent-soft)
                             (etaf-telega-color :surface))
         :role 'button :tab-index 0
         :on-press (if selected nil (lambda () (etaf-telega-open-chat chat)))
-    (flex :flex-direction 'row :align-items 'center
-      (text :color (etaf-telega-color :ink)
-            :font-weight (if selected 'bold 'normal)
-            (expr (or (plist-get chat :title) "?")))
-      (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
-      (expr (when (> (or (plist-get chat :unread) 0) 0)
-              (etaf-node 'etaf-badge
-                         (list :text (number-to-string (plist-get chat :unread))
-                               :variant 'info)
-                         nil))))
-    (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-      (text :color (etaf-telega-color :muted)
-            (expr (or (plist-get chat :preview) ""))))))
+    (etaf-telega-avatar :title (plist-get chat :title))
+    (flex :flex-direction 'column :flex-grow 1 :flex-basis '(px 0) :min-width '(ch 0)
+      (flex :flex-direction 'row :align-items 'center :column-gap '(ch 1)
+        (box :flex-grow 1 :flex-basis '(px 0) :min-width '(ch 0)
+             :height '(lh 1) :overflow 'hidden :wrap-mode 'none
+          (text :color (etaf-telega-color :ink)
+                :font-weight (if selected 'bold 'normal)
+                (expr (or (plist-get chat :title) "?"))))
+        (text :color (etaf-telega-color :muted) (expr (or (plist-get chat :time) ""))))
+      (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
+        (text :color (etaf-telega-color :muted) (expr (or (plist-get chat :preview) "")))))
+    (expr (when (> (or (plist-get chat :unread) 0) 0)
+            (etaf-node 'etaf-badge
+                       (list :text (number-to-string (plist-get chat :unread))
+                             :variant 'info)
+                       nil)))))
 
-(etaf-define-component etaf-telega-day-separator (&key label)
-  "Render a muted day separator."
+(defun etaf-telega--separator-text (label width)
+  "Return a one-line day separator LABEL centred in WIDTH cells."
+  (let* ((label (format " %s " (or label "")))
+         (inner (max 0 (- width (string-width label) 4)))
+         (left (/ inner 2))
+         (right (- inner left)))
+    (concat "  " (make-string left ?─) label (make-string right ?─))))
+
+(etaf-define-component etaf-telega-day-separator (&key label width)
+  "Render a muted day separator between message groups."
   :view
-  (flex :flex-direction 'row :align-items 'center :padding '((lh 0) (ch 2))
-    (text :color (etaf-telega-color :muted) (expr label))))
+  (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
+    (text :color (etaf-telega-color :muted)
+          (expr (etaf-telega--separator-text label width)))))
 
 (etaf-define-component etaf-telega-message-row (&key message selected width)
   "Render MESSAGE at WIDTH; SELECTED paints the selection background."
@@ -123,11 +142,19 @@
     (expr (when-let* ((reply (plist-get message :reply)))
             (list (etaf-node
                    'text (list :color (etaf-telega-color :muted))
-                   (list (format "↩ %s：%s"
+                   (list (format "  ↩ %s：%s"
                                  (or (plist-get reply :sender) "?")
                                  (etaf-telega--one-line (plist-get reply :text) 36)))))))
+    (flex :flex-direction 'row :align-items 'center :width 'stretch :height '(lh 1)
+          :column-gap '(ch 1)
+      (text :color (if (plist-get message :outgoing)
+                       (etaf-telega-color :accent)
+                     (etaf-telega-sender-color (plist-get message :sender)))
+            :font-weight 'bold
+            (expr (or (plist-get message :sender) "?")))
+      (text :color (etaf-telega-color :muted) (expr (or (plist-get message :time) ""))))
     (text :color (etaf-telega-color :ink)
-          (expr (etaf-telega--message-text message width)))))
+          (expr (etaf-telega--message-body message width)))))
 
 (etaf-define-component etaf-telega-shell (&key model entries width)
   "Render the client shell for MODEL; ENTRIES are the message views."

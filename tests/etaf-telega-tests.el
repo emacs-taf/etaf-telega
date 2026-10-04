@@ -240,6 +240,25 @@
     (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
     (should (equal (current-kill 0) "在的"))))
 
+(ert-deftest etaf-telega-tests-day-separators-group-messages ()
+  "Messages from different days carry their day labels."
+  (let* ((histories (make-hash-table :test #'equal)))
+    (puthash 1 (list (list :id 13 :sender "Alice" :time "10:02" :date "2026-10-05" :text "今天")
+                     (list :id 12 :sender "Alice" :time "10:01" :date "2026-10-04" :text "昨天")
+                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "前天"))
+             histories)
+    (let ((backend (etaf-telega-backend-fake-create
+                    :chats (list (list :id 1 :title "Alice" :unread 0))
+                    :histories histories)))
+      (etaf-telega-test--with-client buffer backend
+        (etaf-telega-select-chat 1)
+        (let ((text (etaf-telega-test--text buffer)))
+          (should (string-match-p "2026-10-04" text))
+          (should (string-match-p "2026-10-05" text))
+          (should (string-match-p "昨天" text)))
+        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
+        (should (string-match-p "前天" (etaf-telega-test--text buffer)))))))
+
 (ert-deftest etaf-telega-tests-load-more-prepends-older-history ()
   "Loading an older page prepends it and keeps the selection."
   (let* ((histories (make-hash-table :test #'equal)))

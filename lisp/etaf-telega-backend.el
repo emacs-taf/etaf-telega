@@ -13,7 +13,7 @@
 ;;   :status   (string)                 connection state for the header
 ;;   :me       (plist)                  own account (:id :name)
 ;;   :chats    (list of chat plists)    (:id :title :preview :unread :pinned
-;;                                      :muted :order)
+;;                                      :muted :time :order)
 ;;   :messages (list of message plists) the chat's newest page, newest first
 ;;   :older    (list of message plists) an older page, newest first
 ;;   :message  (message plist)          one later message for the selected
@@ -308,6 +308,10 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
           :unread (or (plist-get chat :unread_count) 0)
           :pinned (eq t (plist-get chat :is_pinned))
           :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
+          :time (if last
+                    (format-time-string
+                     "%H:%M" (seconds-to-time (or (plist-get last :date) 0)))
+                  "")
           :order (or (plist-get chat :order) 0))))
 
 (defun etaf-telega-backend-telega--project-message (message)

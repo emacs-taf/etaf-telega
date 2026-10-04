@@ -23,15 +23,15 @@
 (defun etaf-telega-gui--backend-create ()
   "Return a fake backend with two chats and a short history."
   (let ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :text "在的")
-                     (list :id 11 :sender "Alice" :time "10:00" :text "你好"))
+    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的")
+                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好"))
              histories)
-    (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :text "周报收到"))
+    (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :date "2026-10-04" :text "周报收到"))
              histories)
     (setq etaf-telega-gui--backend
           (etaf-telega-backend-fake-create
-           :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见")
-                        (list :id 2 :title "工作群" :unread 0 :preview "周报收到"))
+           :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02")
+                        (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"))
            :histories histories :responder #'etaf-telega-gui--responder))))
 
 (defun etaf-telega-gui--main ()
@@ -167,14 +167,14 @@
               "delete" (lambda (_)
                          (execute-kbd-macro (kbd "d yes RET")))
               (lambda (_)
-                (and (not (string-match-p "Alice 10:00: 你好" (etaf-telega-gui--text)))
+                (and (not (string-match-p "\n  你好" (etaf-telega-gui--text)))
                      (= (plist-get (etaf-telega-gui--info) :messages) 2))))
              (etaf-telega-gui--action
               "live-message-appends"
               (lambda (_)
                 (etaf-telega-backend-fake-deliver
                  etaf-telega-gui--backend
-                 (list :id 13 :sender "Alice" :time "10:02" :text "好的，明早见")))
+                 (list :id 13 :sender "Alice" :time "10:02" :date "2026-10-05" :text "好的，明早见")))
               (lambda (_) (string-match-p "好的，明早见" (etaf-telega-gui--text)))
               t)
              (etaf-telega-gui--action
