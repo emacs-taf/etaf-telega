@@ -4,22 +4,46 @@
 
 ;;; Commentary:
 ;;
-;; A backend reports connection state, chats, one chat's history and sends
-;; text.  It owns no buffers and never reads the model; the application passes
-;; a CALLBACKS plist and projects the answers:
+;; The capability contract
+;;
+;; A backend owns one account's connection, data and actions.  It owns no
+;; buffers and never reads the model; the application passes a CALLBACKS plist
+;; and projects every answer:
 ;;
 ;;   :status   (string)                 connection state for the header
 ;;   :me       (plist)                  own account (:id :name)
-;;   :chats    (list of chat plists)    (:id :title :preview :unread)
-;;   :messages (list of message plists) (:id :outgoing :sender :time :text)
-;;             newest first, exactly like TDLib history; the application
-;;             reverses them into reading order for display
+;;   :chats    (list of chat plists)    (:id :title :preview :unread :pinned
+;;                                      :muted :order)
+;;   :messages (list of message plists) the chat's newest page, newest first
+;;   :older    (list of message plists) an older page, newest first
 ;;   :message  (message plist)          one later message for the selected
 ;;             chat; the application appends it in reading order
 ;;   :sent     (message plist)          accepted outgoing message
 ;;   :edited   (message plist)          message whose text was replaced
 ;;   :deleted  (id)                     id of a removed message
+;;   :read     (list of ids)            messages accepted as read
 ;;   :error    (string)                 readable failure
+;;
+;; Message plists carry (:id :outgoing :sender :time :date :edited :text) in
+;; reading order; the application reverses pages into reading order for
+;; display.  Every live backend implements the generics below; the Telega
+;; adapter reuses Telega's server, TDLib calls and object cache, and the fake
+;; backend replays fixed data for tests and offline use.
+;;
+;;   (start BACKEND CALLBACKS)            connect and report status, me, chats
+;;   (stop BACKEND)                       stop observing; keep the account
+;;   (select BACKEND CHAT-ID)             open a chat and load its newest page
+;;   (history BACKEND &key before limit)  load messages older than BEFORE
+;;   (send BACKEND TEXT &optional REPLY-TO)  send, optionally replying
+;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
+;;   (delete BACKEND MESSAGE)             remove one message
+;;   (read BACKEND MESSAGE-IDS)           accept messages as read
+;;   (chat-action BACKEND CHAT-ID ACTION &optional VALUE)
+;;                                        ACTION is `read', `unread', `pin',
+;;                                        `mute' or `archive'; pin/mute/archive
+;;                                        toggle, read/unread set the state
+;;
+;; Media and file capabilities join this contract when their views land.
 ;;
 ;; `etaf-telega-backend-telega' starts and observes Telega's own server and
 ;; TDLib event stream.  Telega keeps the account, database and session; this
@@ -35,7 +59,11 @@
   "Start BACKEND and report through CALLBACKS.  Return BACKEND.")
 
 (cl-defgeneric etaf-telega-backend-select (backend chat-id)
-  "Make CHAT-ID current in BACKEND and load its recent history.")
+  "Make CHAT-ID current in BACKEND and load its newest history page.")
+
+(cl-defgeneric etaf-telega-backend-history (backend &key before limit)
+  "Load a page older than BEFORE in BACKEND's selected chat.
+BEFORE is the oldest loaded message id, or nil for the newest page.")
 
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.")
@@ -45,6 +73,13 @@
 
 (cl-defgeneric etaf-telega-backend-delete (backend message)
   "Delete MESSAGE through BACKEND.")
+
+(cl-defgeneric etaf-telega-backend-read (backend message-ids)
+  "Accept MESSAGE-IDS in BACKEND's selected chat as read.")
+
+(cl-defgeneric etaf-telega-backend-chat-action (backend chat-id action &optional value)
+  "Apply ACTION to CHAT-ID through BACKEND.
+`read' and `unread' set the state; `pin', `mute' and `archive' toggle it.")
 
 (cl-defgeneric etaf-telega-backend-stop (backend)
   "Release BACKEND's connection without touching Telega's account data.")
@@ -75,16 +110,54 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
     (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
   backend)
 
+(defconst etaf-telega-backend-fake-page-size 2
+  "Messages per reported page, so tests can exercise pagination.")
+
+(defun etaf-telega-backend-fake--page (backend chat-id start)
+  "Return BACKEND's stored CHAT-ID messages from START, one page, newest first."
+  (let* ((all (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+         (from (min start (length all)))
+         (to (min (length all) (+ from etaf-telega-backend-fake-page-size))))
+    (cl-subseq all from to)))
+
+(defun etaf-telega-backend-fake--set-unread (backend chat-id unread)
+  "Set CHAT-ID's stored unread count in BACKEND's chats."
+  (setf (etaf-telega-backend-fake-chats backend)
+        (cl-mapcar (lambda (chat)
+                     (if (equal (plist-get chat :id) chat-id)
+                         (plist-put (copy-tree chat) :unread unread)
+                       chat))
+                   (etaf-telega-backend-fake-chats backend))))
+
 (cl-defmethod etaf-telega-backend-select ((backend etaf-telega-backend-fake)
                                           chat-id)
-  "Report BACKEND's fixed history for CHAT-ID."
+  "Open CHAT-ID, report its newest page and accept it as read."
   (setf (etaf-telega-backend-fake-chat-id backend) chat-id)
   (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                  :messages)))
-    (funcall report
-             (copy-tree (gethash chat-id
-                                 (etaf-telega-backend-fake-histories backend)))))
+    (funcall report (copy-tree (etaf-telega-backend-fake--page backend chat-id 0))))
+  ;; Opening a conversation reads its newest page, like Telega's own chatbuf.
+  (etaf-telega-backend-fake--set-unread backend chat-id 0)
+  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                 :chats)))
+    (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
   chat-id)
+
+(cl-defmethod etaf-telega-backend-history ((backend etaf-telega-backend-fake)
+                                           &key before limit)
+  "Report a page older than BEFORE in BACKEND's selected chat."
+  (ignore limit)
+  (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+         (all (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+         (index (if before
+                    (1+ (or (cl-position before all
+                                         :key (lambda (message) (plist-get message :id))
+                                         :test #'equal)
+                            -1))
+                  0)))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :older)))
+      (funcall report (copy-tree (etaf-telega-backend-fake--page backend chat-id index))))))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake)
                                         text &optional reply-to)
@@ -132,6 +205,41 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
 
+(cl-defmethod etaf-telega-backend-read ((backend etaf-telega-backend-fake)
+                                        message-ids)
+  "Accept MESSAGE-IDS as read in BACKEND's selected chat."
+  (let ((chat-id (etaf-telega-backend-fake-chat-id backend)))
+    (etaf-telega-backend-fake--set-unread backend chat-id 0)
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :read)))
+      (funcall report (copy-sequence message-ids)))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :chats)))
+      (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
+    message-ids))
+
+(cl-defmethod etaf-telega-backend-chat-action ((backend etaf-telega-backend-fake)
+                                               chat-id action &optional value)
+  "Apply ACTION to CHAT-ID in BACKEND's stored chats."
+  (setf (etaf-telega-backend-fake-chats backend)
+        (cl-mapcar (lambda (chat)
+                     (if (equal (plist-get chat :id) chat-id)
+                         (let ((updated (copy-tree chat)))
+                           (pcase action
+                             ('read (plist-put updated :unread 0))
+                             ('unread (plist-put updated :unread (or (plist-get updated :unread) 1)))
+                             ('pin (plist-put updated :pinned (not (plist-get updated :pinned))))
+                             ('mute (plist-put updated :muted (or value (not (plist-get updated :muted)))))
+                             ('archive (plist-put updated :archived (not (plist-get updated :archived))))
+                             (_ (error "Unknown chat action: %s" action)))
+                           updated)
+                       chat))
+                   (etaf-telega-backend-fake-chats backend)))
+  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                 :chats)))
+    (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
+  action)
+
 (defun etaf-telega-backend-fake-message (backend id)
   "Return BACKEND's stored message with ID, or nil."
   (cl-find id (gethash (etaf-telega-backend-fake-chat-id backend)
@@ -163,6 +271,12 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (declare-function telega-server-live-p "telega-server" ())
 (declare-function telega-chat-get "telega-chat" (chat-id &optional offline-p))
 (declare-function telega-chat-title "telega-chat" (chat &optional fmt-type no-badges))
+(declare-function telega-chat-muted-p "telega-chat" (chat))
+(declare-function telega-chat-toggle-read "telega-chat" (chat))
+(declare-function telega-chat-toggle-pin "telega-chat" (chat))
+(declare-function telega-chat-toggle-muted "telega-chat" (chat &optional muted-for))
+(declare-function telega-chat-toggle-archive "telega-chat" (chat))
+(declare-function telega--viewMessages "telega-tdlib" (chat messages &rest args))
 (declare-function telega--getChatHistory "telega-tdlib"
                   (chat from-msg-id offset &optional limit only-local callback))
 (declare-function telega--sendMessage "telega-tdlib" (chat imc &rest args))
@@ -192,6 +306,8 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
           :title (or (ignore-errors (telega-chat-title chat)) "?")
           :preview (or (ignore-errors (telega-msg-content-text last)) "")
           :unread (or (plist-get chat :unread_count) 0)
+          :pinned (eq t (plist-get chat :is_pinned))
+          :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
           :order (or (plist-get chat :order) 0))))
 
 (defun etaf-telega-backend-telega--project-message (message)
@@ -235,17 +351,34 @@ requested so every live backend sees the shared Telega state."
 
 (defun etaf-telega-backend-telega--ready ()
   "Report readiness to every live telega backend."
+  (when etaf-telega-backend-telega--chats-timer
+    (cancel-timer etaf-telega-backend-telega--chats-timer)
+    (setq etaf-telega-backend-telega--chats-timer nil))
   (dolist (backend etaf-telega-backend-telega-instances)
     (etaf-telega-backend-telega--report backend :status "就绪" :chats t)))
 
-(defun etaf-telega-backend-telega--chat-update (_chat)
-  "Report the updated chat list to every live telega backend.
-The message list of an open chat is maintained by
-`etaf-telega-backend-telega--message' instead of reloading its history."
+(defvar etaf-telega-backend-telega--chats-timer nil
+  "Pending chat-list refresh; a TDLib sync storm becomes one report.")
+
+(defun etaf-telega-backend-telega--flush-chats ()
+  "Report the current chat list to every live backend."
+  (setq etaf-telega-backend-telega--chats-timer nil)
   (dolist (backend etaf-telega-backend-telega-instances)
     (when-let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
                 (report (plist-get callbacks :chats)))
       (funcall report (etaf-telega-backend-telega--chats)))))
+
+(defun etaf-telega-backend-telega--schedule-chats ()
+  "Coalesce chat updates into one refreshed list per window."
+  (unless etaf-telega-backend-telega--chats-timer
+    (setq etaf-telega-backend-telega--chats-timer
+          (run-at-time 0.15 nil #'etaf-telega-backend-telega--flush-chats))))
+
+(defun etaf-telega-backend-telega--chat-update (_chat)
+  "Schedule a chat-list refresh for every live telega backend.
+The message list of an open chat is maintained by
+`etaf-telega-backend-telega--message' instead of reloading its history."
+  (etaf-telega-backend-telega--schedule-chats))
 
 (defun etaf-telega-backend-telega--message (message)
   "Report a later MESSAGE to every backend viewing its chat.
@@ -310,7 +443,7 @@ account and its database."
 
 (cl-defmethod etaf-telega-backend-select ((backend etaf-telega-backend-telega)
                                           chat-id)
-  "Load CHAT-ID's recent history through Telega."
+  "Load CHAT-ID's newest history page through Telega and read it."
   (setf (etaf-telega-backend-telega-chat-id backend) chat-id)
   (let ((callbacks (etaf-telega-backend-telega-callbacks backend)))
     (condition-case err
@@ -318,12 +451,74 @@ account and its database."
           (telega--getChatHistory
            chat 0 0 50 nil
            (lambda (event)
-             (when-let* ((report (plist-get callbacks :messages)))
+             (let ((messages (append (plist-get event :messages) nil)))
+               (when-let* ((report (plist-get callbacks :messages)))
+                 (funcall report
+                          (mapcar #'etaf-telega-backend-telega--project-message
+                                  messages)))
+               ;; Opening a conversation reads its loaded page, exactly like
+               ;; Telega's own chat buffer.
+               (when messages
+                 (ignore-errors
+                   (telega--viewMessages
+                    chat messages :source '(:@type "messageSourceChatHistory"))))))))
+      (error (when-let* ((report (plist-get callbacks :error)))
+               (funcall report (error-message-string err)))))))
+
+(cl-defmethod etaf-telega-backend-history ((backend etaf-telega-backend-telega)
+                                           &key before limit)
+  "Load a page older than BEFORE in the selected Telega chat."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (chat (and chat-id (telega-chat-get chat-id))))
+    (condition-case err
+        (when chat
+          (telega--getChatHistory
+           chat (or before 0) 0 (or limit 50) nil
+           (lambda (event)
+             (when-let* ((report (plist-get callbacks :older)))
                (funcall report
                         (mapcar #'etaf-telega-backend-telega--project-message
                                 (append (plist-get event :messages) nil)))))))
-      (error (when-let* ((report (plist-get callbacks :error)))
-               (funcall report (error-message-string err)))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))))
+
+(cl-defmethod etaf-telega-backend-read ((backend etaf-telega-backend-telega)
+                                        message-ids)
+  "Accept MESSAGE-IDS as read through Telega."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (chat (and chat-id (telega-chat-get chat-id))))
+    (when (and chat message-ids)
+      (condition-case err
+          (progn
+            (telega--viewMessages
+             chat (mapcar (lambda (id) (list :chat_id chat-id :id id)) message-ids)
+             :source '(:@type "messageSourceChatHistory"))
+            (when-let* ((report (plist-get callbacks :read)))
+              (funcall report (copy-sequence message-ids))))
+        (error (etaf-telega-backend-telega--report
+                backend :error (error-message-string err)))))))
+
+(cl-defmethod etaf-telega-backend-chat-action ((backend etaf-telega-backend-telega)
+                                               chat-id action &optional value)
+  "Apply ACTION to CHAT-ID through Telega's own chat commands."
+  (condition-case err
+      (let ((chat (telega-chat-get chat-id)))
+        (unless chat (error "没有这个对话：%s" chat-id))
+        (pcase action
+          ('read (when (> (or (plist-get chat :unread_count) 0) 0)
+                   (telega-chat-toggle-read chat)))
+          ('unread (when (= (or (plist-get chat :unread_count) 0) 0)
+                     (telega-chat-toggle-read chat)))
+          ('pin (telega-chat-toggle-pin chat))
+          ('mute (telega-chat-toggle-muted chat value))
+          ('archive (telega-chat-toggle-archive chat))
+          (_ (error "不支持的会话动作：%s" action)))
+        action)
+    (error (etaf-telega-backend-telega--report
+            backend :error (error-message-string err))
+           nil)))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-telega)
                                         text &optional reply-to)
@@ -399,6 +594,9 @@ failures are reported without keeping a half-send."
   (setq etaf-telega-backend-telega-instances
         (delq backend etaf-telega-backend-telega-instances))
   (unless etaf-telega-backend-telega-instances
+    (when etaf-telega-backend-telega--chats-timer
+      (cancel-timer etaf-telega-backend-telega--chats-timer)
+      (setq etaf-telega-backend-telega--chats-timer nil))
     (remove-hook 'telega-ready-hook #'etaf-telega-backend-telega--ready)
     (remove-hook 'telega-chat-update-hook
                  #'etaf-telega-backend-telega--chat-update)

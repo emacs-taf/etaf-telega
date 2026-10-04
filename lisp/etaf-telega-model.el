@@ -118,6 +118,12 @@ the backend reports the chat's messages."
   "Set MODEL's compose state to COMPOSE, a `(:kind :target)' plist or nil."
   (setf (etaf-value (plist-get model :compose)) compose))
 
+(defun etaf-telega-model-prepend-messages (model messages)
+  "Prepend older MESSAGES, in reading order, to MODEL's history."
+  (when messages
+    (setf (etaf-value (plist-get model :messages))
+          (append messages (etaf-telega-model-messages model)))))
+
 (defun etaf-telega-model-append-message (model message)
   "Append MESSAGE to MODEL's message list.
 A message whose non-nil id is already present replaces its earlier copy, so a

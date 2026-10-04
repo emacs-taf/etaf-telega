@@ -94,6 +94,10 @@ session ends."
                       (report (lambda ()
                                 (etaf-telega-model-set-messages
                                  etaf-telega--model (reverse messages)))))
+          :older (lambda (messages)
+                   (report (lambda ()
+                             (etaf-telega-model-prepend-messages
+                              etaf-telega--model (reverse messages)))))
           :sent (lambda (message)
                   (report (lambda ()
                             (clear-draft-for (plist-get message :text))
@@ -201,6 +205,16 @@ session ends."
   (interactive)
   (let ((chat (etaf-telega-model-chat etaf-telega--model)))
     (when chat (etaf-telega-open-chat chat))))
+
+(defun etaf-telega-load-more ()
+  "Load an older page of the selected chat's history."
+  (interactive)
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (messages (etaf-telega-model-messages model)))
+    (unless (etaf-telega-model-chat model) (user-error "先选择一个对话"))
+    (when messages
+      (etaf-telega-backend-history etaf-telega--backend
+                                   :before (plist-get (car messages) :id)))))
 
 (defun etaf-telega--move-message (delta)
   "Move the message selection by DELTA messages."

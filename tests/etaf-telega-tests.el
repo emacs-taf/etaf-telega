@@ -240,5 +240,46 @@
     (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
     (should (equal (current-kill 0) "在的"))))
 
+(ert-deftest etaf-telega-tests-load-more-prepends-older-history ()
+  "Loading an older page prepends it and keeps the selection."
+  (let* ((histories (make-hash-table :test #'equal)))
+    (puthash 1 (list (list :id 14 :sender "Alice" :time "10:03" :text "四")
+                     (list :id 13 :sender "Alice" :time "10:02" :text "三")
+                     (list :id 12 :sender "Alice" :time "10:01" :text "二")
+                     (list :id 11 :sender "Alice" :time "10:00" :text "一"))
+             histories)
+    (let ((backend (etaf-telega-backend-fake-create
+                    :chats (list (list :id 1 :title "Alice" :unread 0))
+                    :histories histories)))
+      (etaf-telega-test--with-client buffer backend
+        (etaf-telega-select-chat 1)
+        (should (equal (plist-get (etaf-telega-info buffer) :messages) 2))
+        (should (equal (plist-get (etaf-telega-info buffer) :selected) 14))
+        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
+        (should (equal (plist-get (etaf-telega-info buffer) :messages) 4))
+        (should (equal (plist-get (etaf-telega-info buffer) :selected) 14))
+        (let ((text (etaf-telega-test--text buffer)))
+          (should (< (string-match-p "一" text) (string-match-p "二" text))))
+        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
+        (should (equal (plist-get (etaf-telega-info buffer) :messages) 4))))))
+
+(ert-deftest etaf-telega-tests-opening-a-chat-reads-its-newest-page ()
+  "Opening a chat accepts its newest page as read, like Telega's chatbuf."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 2))
+      (etaf-telega-select-chat 1)
+      (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 0)))))
+
+(ert-deftest etaf-telega-tests-chat-actions-update-the-stored-chat ()
+  "The backend chat actions set read and toggle pin and mute."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-backend-chat-action backend 1 'pin)
+    (should (eq t (plist-get (car (etaf-telega-backend-fake-chats backend)) :pinned)))
+    (etaf-telega-backend-chat-action backend 1 'mute)
+    (should (eq t (plist-get (car (etaf-telega-backend-fake-chats backend)) :muted)))
+    (etaf-telega-backend-chat-action backend 1 'read)
+    (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 0))))
+
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here

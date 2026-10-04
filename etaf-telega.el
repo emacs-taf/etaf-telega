@@ -42,6 +42,8 @@
 ;; Select the first conversation in the chat list.
 ;; Function: etaf-telega-last-chat ()
 ;; Select the last conversation in the chat list.
+;; Function: etaf-telega-load-more ()
+;; Load an older page of the selected chat's history.
 ;; Function: etaf-telega-reload-chat ()
 ;; Reload the selected conversation's recent history.
 ;; Function: etaf-telega-compose ()
@@ -70,6 +72,24 @@
 ;; Variable: etaf-telega-backend-create-function
 ;; Return a fresh backend for `etaf-telega-open'.  Bind it to a fake backend
 ;; factory for tests and offline demonstrations.
+;; Function: etaf-telega-backend-start (backend callbacks)
+;; Connect BACKEND and report status, account and chats through CALLBACKS.
+;; Function: etaf-telega-backend-stop (backend)
+;; Stop observing the account without closing Telega's server or data.
+;; Function: etaf-telega-backend-select (backend chat-id)
+;; Open the chat with CHAT-ID and load its newest history page.
+;; Function: etaf-telega-backend-history (backend &key before limit)
+;; Load messages older than BEFORE, the oldest loaded message id.
+;; Function: etaf-telega-backend-send (backend text &optional reply-to)
+;; Send TEXT, replying to the message REPLY-TO when non-nil.
+;; Function: etaf-telega-backend-edit (backend message text)
+;; Replace the text of MESSAGE.
+;; Function: etaf-telega-backend-delete (backend message)
+;; Delete MESSAGE.
+;; Function: etaf-telega-backend-read (backend message-ids)
+;; Accept MESSAGE-IDS in the selected chat as read.
+;; Function: etaf-telega-backend-chat-action (backend chat-id action &optional value)
+;; Apply ACTION to CHAT-ID: read/unread set the state, pin/mute/archive toggle.
 ;; Function: etaf-telega-backend-fake-create (&key chats histories responder)
 ;; Return an offline backend seeded with CHATS and HISTORIES.  RESPONDER, when
 ;; non-nil, is called with (BACKEND TEXT) after each send so a caller can
@@ -84,6 +104,8 @@
 ;; Return BACKEND's stored projection of the message with ID, or nil.
 ;; Function: etaf-telega-backend-fake-replies (backend)
 ;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
+;; Function: etaf-telega-backend-fake-chats (backend)
+;; Return BACKEND's stored chat projections.
 ;; Variable: etaf-telega-buffer-name
 ;; Buffer name of the mounted client.
 
