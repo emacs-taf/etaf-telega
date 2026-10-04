@@ -38,6 +38,8 @@ with the components the app actually uses."
           :ui-bg (etaf-telega-color :bg)
           :ui-border (etaf-telega-color :border)
           :ui-muted-fg (etaf-telega-color :muted)
+          :ui-panel-bg (etaf-telega-color :surface-2)
+          :ui-panel-fg (etaf-telega-color :ink)
           :ui-disabled-fg (etaf-telega-color :muted)
           :ui-disabled-bg (etaf-telega-color :surface)
           :ui-disabled-border (etaf-telega-color :border)

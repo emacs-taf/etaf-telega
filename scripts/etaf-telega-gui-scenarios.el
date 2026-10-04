@@ -30,8 +30,8 @@
              histories)
     (setq etaf-telega-gui--backend
           (etaf-telega-backend-fake-create
-           :chats (list (list :id 1 :title "Alice" :unread 0)
-                        (list :id 2 :title "工作群" :unread 0))
+           :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见")
+                        (list :id 2 :title "工作群" :unread 0 :preview "周报收到"))
            :histories histories :responder #'etaf-telega-gui--responder))))
 
 (defun etaf-telega-gui--main ()
@@ -48,6 +48,11 @@
   "Check settled client facts."
   (and (stringp (plist-get (etaf-telega-gui--info) :status))
        (not (string-prefix-p "错误" (plist-get (etaf-telega-gui--info) :status)))))
+
+(defun etaf-telega-gui--text ()
+  "Return the owned buffer's visible text."
+  (with-current-buffer etaf-telega-gui--buffer
+    (buffer-substring-no-properties (point-min) (point-max))))
 
 (defun etaf-telega-gui--geometry ()
   "Check the complete canvas and its window fit."
@@ -100,12 +105,12 @@
          (frame (make-frame '((name . "Telegram / GUI acceptance") (no-focus-on-map . t))))
          (scenario
           (etaf-gui-verifier-scenario-create
-           :name "etaf-telega-product" :claim "In-layout composer, live chat stream and stable navigation"
+           :name "etaf-telega-product" :claim "Telega-style conversation: selection, reply, edit, live stream"
            :initialize
            (lambda (context)
              (select-frame frame) (delete-frame original-frame t)
              (set-frame-size frame 140 44)
-             (setq etaf-telega--hold nil)
+             (setq etaf-telega-gui--hold nil)
              (let ((etaf-telega-backend-create-function
                     (lambda () (etaf-telega-gui--backend-create) etaf-telega-gui--backend)))
                (setq etaf-telega-gui--buffer (etaf-telega-open))
@@ -116,17 +121,72 @@
             (list
              (etaf-telega-gui--action "chat-open" #'ignore #'etaf-telega-gui--idle t)
              (etaf-telega-gui--action
-              "compose" (lambda (_) (execute-kbd-macro (kbd "i")))
-              (lambda (_) (plist-get (etaf-telega-gui--info) :editing)) t)
+              "select-previous-message" (lambda (_) (execute-kbd-macro (kbd "p")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)) t)
              (etaf-telega-gui--action
-              "compose-multiline" (lambda (_) (etaf-telega-gui--type "今晚见。\n带上材料。"))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "今晚见。\n带上材料。")))
+              "reply" (lambda (_)
+                        (execute-kbd-macro (kbd "r"))
+                        (unless (eq (plist-get (etaf-telega-gui--info) :compose) 'reply)
+                          (error "Reply mode did not arm"))
+                        (etaf-telega-gui--type "收到，明早见")
+                        (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (null (plist-get info :compose))
+                       (equal (plist-get info :draft) "")
+                       (string-match-p "↩ Alice：你好" (etaf-telega-gui--text)))))
+              t)
              (etaf-telega-gui--action
-              "cancel-keeps-draft" (lambda (_) (execute-kbd-macro (kbd "C-c C-k")))
+              "edit" (lambda (_)
+                       (execute-kbd-macro (kbd "e"))
+                       (unless (eq (plist-get (etaf-telega-gui--info) :compose) 'edit)
+                         (error "Edit mode did not arm"))
+                       (etaf-telega-gui--type "！")
+                       (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (and (null (plist-get (etaf-telega-gui--info) :compose))
+                     (string-match-p "（已编辑）" (etaf-telega-gui--text)))))
+             (etaf-telega-gui--action
+              "cancel-edit-restores-draft"
+              (lambda (_)
+                (execute-kbd-macro (kbd "e"))
+                (etaf-telega-gui--type "不要这个")
+                (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (null (plist-get info :compose))
+                       (equal (plist-get info :draft) ""))))
+              t)
+             (etaf-telega-gui--action
+              "copy" (lambda (_)
+                       (execute-kbd-macro (kbd "p"))
+                       (execute-kbd-macro (kbd "p"))
+                       (execute-kbd-macro (kbd "c")))
+              (lambda (_) (equal (current-kill 0) "你好")))
+             (etaf-telega-gui--action
+              "delete" (lambda (_)
+                         (execute-kbd-macro (kbd "d yes RET")))
+              (lambda (_)
+                (and (not (string-match-p "Alice 10:00: 你好" (etaf-telega-gui--text)))
+                     (= (plist-get (etaf-telega-gui--info) :messages) 2))))
+             (etaf-telega-gui--action
+              "live-message-appends"
+              (lambda (_)
+                (etaf-telega-backend-fake-deliver
+                 etaf-telega-gui--backend
+                 (list :id 13 :sender "Alice" :time "10:02" :text "好的，明早见")))
+              (lambda (_) (string-match-p "好的，明早见" (etaf-telega-gui--text)))
+              t)
+             (etaf-telega-gui--action
+              "composer-draft" (lambda (_)
+                                 (execute-kbd-macro (kbd "i"))
+                                 (etaf-telega-gui--type "未发送的草稿")
+                                 (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (not (plist-get info :editing))
-                       (equal (plist-get info :draft) "今晚见。\n带上材料。")))))
+                       (equal (plist-get info :draft) "未发送的草稿"))))
+              t)
              (etaf-telega-gui--action
               "late-receipt-keeps-draft"
               (lambda (_)
@@ -136,26 +196,14 @@
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (not (plist-get info :editing))
-                       (equal (plist-get info :draft) "今晚见。\n带上材料。")))))
+                       (equal (plist-get info :draft) "未发送的草稿")))))
              (etaf-telega-gui--action
               "confirm-clears-draft"
               (lambda (_)
                 (setq etaf-telega-gui--hold nil)
                 (etaf-telega-backend-fake-complete
-                 etaf-telega-gui--backend "今晚见。\n带上材料。"))
+                 etaf-telega-gui--backend "未发送的草稿"))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "")) t)
-             (etaf-telega-gui--action
-              "live-message-appends"
-              (lambda (_)
-                (etaf-telega-backend-fake-deliver
-                 etaf-telega-gui--backend
-                 (list :id 13 :sender "Alice" :time "10:02" :text "好的，明早见")))
-              (lambda (_)
-                (and (string-match-p "明早见"
-                                     (with-current-buffer etaf-telega-gui--buffer
-                                       (buffer-substring-no-properties (point-min) (point-max))))
-                     (= (plist-get (etaf-telega-gui--info) :messages) 4)))
-              t)
              (etaf-telega-gui--action
               "next-chat" (lambda (_) (execute-kbd-macro (kbd "j")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 2)))
@@ -170,7 +218,7 @@
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 1)))
              (etaf-telega-gui--action
               "reload-history" (lambda (_) (execute-kbd-macro (kbd "g")))
-              (lambda (_) (= (plist-get (etaf-telega-gui--info) :messages) 2))))
+              (lambda (_) (= (plist-get (etaf-telega-gui--info) :messages) 1))))
             (mapcar
              (lambda (size)
                (etaf-telega-gui--action
