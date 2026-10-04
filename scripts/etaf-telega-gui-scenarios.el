@@ -1,0 +1,193 @@
+;;; etaf-telega-gui-scenarios.el --- GUI acceptance for the Telegram client -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+;;; Commentary:
+;; Run inside an owned graphical Emacs instance.  Drives the real client
+;; through its declared public API with the offline backend, using command-loop
+;; keys and shared control activation; Telega's account is never touched and no
+;; frame is raised.
+;;; Code:
+(require 'cl-lib)
+(require 'etaf-telega)
+(require 'emacs-gui-verifier)
+
+(defvar etaf-telega-gui--buffer nil)
+(defvar etaf-telega-gui--backend nil)
+(defvar etaf-telega-gui--hold nil
+  "When non-nil the fake backend withholds its send acknowledgement.")
+
+(defun etaf-telega-gui--responder (backend text)
+  "Acknowledge TEXT for BACKEND unless the scenario holds the receipt."
+  (unless etaf-telega-gui--hold
+    (etaf-telega-backend-fake-complete backend text)))
+
+(defun etaf-telega-gui--backend-create ()
+  "Return a fake backend with two chats and a short history."
+  (let ((histories (make-hash-table :test #'equal)))
+    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :text "在的")
+                     (list :id 11 :sender "Alice" :time "10:00" :text "你好"))
+             histories)
+    (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :text "周报收到"))
+             histories)
+    (setq etaf-telega-gui--backend
+          (etaf-telega-backend-fake-create
+           :chats (list (list :id 1 :title "Alice" :unread 0)
+                        (list :id 2 :title "工作群" :unread 0))
+           :histories histories :responder #'etaf-telega-gui--responder))))
+
+(defun etaf-telega-gui--main ()
+  "Select the client window."
+  (if-let* ((window (get-buffer-window etaf-telega-gui--buffer t)))
+      (select-window window)
+    (switch-to-buffer etaf-telega-gui--buffer)))
+
+(defun etaf-telega-gui--info ()
+  "Return the client facts of the owned buffer."
+  (with-current-buffer etaf-telega-gui--buffer (etaf-telega-info)))
+
+(defun etaf-telega-gui--idle (_)
+  "Check settled client facts."
+  (and (stringp (plist-get (etaf-telega-gui--info) :status))
+       (not (string-prefix-p "错误" (plist-get (etaf-telega-gui--info) :status)))))
+
+(defun etaf-telega-gui--geometry ()
+  "Check the complete canvas and its window fit."
+  (let* ((window (get-buffer-window etaf-telega-gui--buffer))
+         (size (and window (window-text-pixel-size window)))
+         (editing (with-current-buffer etaf-telega-gui--buffer
+                    (and (etaf-runtime-for-buffer (current-buffer))
+                         (etaf-text-input-active-p (etaf-runtime-for-buffer (current-buffer)))))))
+    (and window
+         (or editing (etaf-gui-verifier-canvas-filled-p etaf-telega-gui--buffer))
+         (or editing (<= (car size) (window-body-width window t)))
+         (= (window-hscroll window) 0)
+         (let ((info (etaf-telega-gui--info)))
+           (and (integerp (plist-get info :chats))
+                (<= 1 (plist-get info :chats)))))))
+
+(defun etaf-telega-gui--action (id execute &optional ready screenshot)
+  "Build the verifier action ID with EXECUTE, READY and SCREENSHOT."
+  (etaf-gui-verifier-action-create
+   :id id :screenshot screenshot
+   :execute (lambda (context)
+              (etaf-telega-gui--main) (funcall execute context)
+              (setf (etaf-gui-verifier-context-target-buffer context)
+                    (window-buffer (selected-window))))
+   :settled-p
+   (lambda (_context)
+     (with-current-buffer etaf-telega-gui--buffer
+       (and (or (not ready) (funcall ready nil))
+            (etaf-telega-gui--geometry))))
+   :assertions
+   (lambda (_context)
+     (with-current-buffer etaf-telega-gui--buffer
+       (append (list (etaf-gui-verifier-assert
+                      "no client error"
+                      (not (string-prefix-p "错误" (plist-get (etaf-telega-info) :status)))))
+               (etaf-gui-verifier-line-height-assertions etaf-telega-gui--buffer)
+               (list (etaf-gui-verifier-assert
+                      "composer lives inside the layout"
+                      (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+                             (bounds (and runtime (etaf-host-ref-bounds runtime 'telega-composer))))
+                        (and runtime (consp bounds))))))))))
+
+(defun etaf-telega-gui--type (text)
+  "Enter TEXT into the active composer session."
+  (insert text))
+
+(defun etaf-telega-gui-run (directory)
+  "Run the offline product workflow and save evidence to DIRECTORY."
+  (let* ((original-frame (selected-frame))
+         (frame (make-frame '((name . "Telegram / GUI acceptance") (no-focus-on-map . t))))
+         (scenario
+          (etaf-gui-verifier-scenario-create
+           :name "etaf-telega-product" :claim "In-layout composer, live chat stream and stable navigation"
+           :initialize
+           (lambda (context)
+             (select-frame frame) (delete-frame original-frame t)
+             (set-frame-size frame 140 44)
+             (setq etaf-telega--hold nil)
+             (let ((etaf-telega-backend-create-function
+                    (lambda () (etaf-telega-gui--backend-create) etaf-telega-gui--backend)))
+               (setq etaf-telega-gui--buffer (etaf-telega-open))
+               (with-current-buffer etaf-telega-gui--buffer (etaf-telega-select-chat 1)))
+             (setf (etaf-gui-verifier-context-target-buffer context) etaf-telega-gui--buffer))
+           :actions
+           (append
+            (list
+             (etaf-telega-gui--action "chat-open" #'ignore #'etaf-telega-gui--idle t)
+             (etaf-telega-gui--action
+              "compose" (lambda (_) (execute-kbd-macro (kbd "i")))
+              (lambda (_) (plist-get (etaf-telega-gui--info) :editing)) t)
+             (etaf-telega-gui--action
+              "compose-multiline" (lambda (_) (etaf-telega-gui--type "今晚见。\n带上材料。"))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "今晚见。\n带上材料。")))
+             (etaf-telega-gui--action
+              "cancel-keeps-draft" (lambda (_) (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) "今晚见。\n带上材料。")))))
+             (etaf-telega-gui--action
+              "late-receipt-keeps-draft"
+              (lambda (_)
+                (setq etaf-telega-gui--hold t)
+                (execute-kbd-macro (kbd "i"))
+                (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) "今晚见。\n带上材料。")))))
+             (etaf-telega-gui--action
+              "confirm-clears-draft"
+              (lambda (_)
+                (setq etaf-telega-gui--hold nil)
+                (etaf-telega-backend-fake-complete
+                 etaf-telega-gui--backend "今晚见。\n带上材料。"))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "")) t)
+             (etaf-telega-gui--action
+              "live-message-appends"
+              (lambda (_)
+                (etaf-telega-backend-fake-deliver
+                 etaf-telega-gui--backend
+                 (list :id 13 :sender "Alice" :time "10:02" :text "好的，明早见")))
+              (lambda (_)
+                (and (string-match-p "明早见"
+                                     (with-current-buffer etaf-telega-gui--buffer
+                                       (buffer-substring-no-properties (point-min) (point-max))))
+                     (= (plist-get (etaf-telega-gui--info) :messages) 4)))
+              t)
+             (etaf-telega-gui--action
+              "next-chat" (lambda (_) (execute-kbd-macro (kbd "j")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 2)))
+             (etaf-telega-gui--action
+              "previous-chat" (lambda (_) (execute-kbd-macro (kbd "k")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 1)))
+             (etaf-telega-gui--action
+              "last-chat" (lambda (_) (execute-kbd-macro (kbd "M->")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 2)))
+             (etaf-telega-gui--action
+              "first-chat" (lambda (_) (execute-kbd-macro (kbd "M-<")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 1)))
+             (etaf-telega-gui--action
+              "reload-history" (lambda (_) (execute-kbd-macro (kbd "g")))
+              (lambda (_) (= (plist-get (etaf-telega-gui--info) :messages) 2))))
+            (mapcar
+             (lambda (size)
+               (etaf-telega-gui--action
+                (format "layout-%dx%d" (car size) (cadr size))
+                (lambda (_) (set-frame-size frame (car size) (cadr size)))
+                (lambda (_) (and (= (frame-width frame) (car size))
+                                 (= (frame-height frame) (cadr size)))) t))
+             '((120 40) (80 30) (140 44))))
+           :completion (lambda (_) (etaf-telega-gui--idle nil)))))
+    (unwind-protect
+        (etaf-gui-verifier-run scenario directory)
+      (when (buffer-live-p etaf-telega-gui--buffer)
+        (with-current-buffer etaf-telega-gui--buffer
+          (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+                (info (etaf-telega-info)))
+            (with-temp-file (expand-file-name "client.txt" directory)
+              (insert (format "%S\n\n%s" info text))))
+          (etaf-telega-close))))))
+(provide 'etaf-telega-gui-scenarios)
+;;; etaf-telega-gui-scenarios.el ends here
