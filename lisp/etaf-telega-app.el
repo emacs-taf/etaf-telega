@@ -8,6 +8,10 @@
 ;; lifecycle.  A paint is a full projection of the model; while the composer
 ;; owns a native editing session, paints stay pending so the session keeps
 ;; the buffer text, exactly like every other ETAF application.
+;;
+;; Keys follow Telega's own habits: n/p move between messages, r replies,
+;; e edits, d deletes, c copies, i starts typing, and C-c C-k cancels a reply
+;; or an edit.  j/k (and C-n/C-p) move between conversations.
 
 ;;; Code:
 
@@ -48,12 +52,16 @@ Tests bind this to a fake backend factory so no network is touched.")
   (max 20 (- (or (and (etaf-telega--window) (window-body-width)) 80)
              etaf-telega-sidebar-width 6)))
 
+(defun etaf-telega--runtime ()
+  "Return the mounted runtime of the current buffer, if any."
+  (etaf-runtime-for-buffer (current-buffer)))
+
 (defun etaf-telega--paint ()
   "Reproject the model into the mounted runtime.
 A native editing session owns the buffer text, so its paint waits until the
 session ends."
   (when (and etaf-telega--model (etaf-telega--window))
-    (let ((runtime (etaf-runtime-for-buffer (current-buffer))))
+    (let ((runtime (etaf-telega--runtime)))
       (when runtime
         (if (etaf-text-input-active-p runtime)
             (setq etaf-telega--paint-pending t)
@@ -70,7 +78,10 @@ session ends."
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (funcall update)
-                    (etaf-telega--paint)))))
+                    (etaf-telega--paint))))
+              (clear-draft-for (text)
+                (when (equal (etaf-telega-model-draft etaf-telega--model) text)
+                  (etaf-telega-model-set-draft etaf-telega--model ""))))
     (list :status (lambda (status)
                     (report (lambda ()
                               (etaf-telega-model-set-status etaf-telega--model status))))
@@ -85,10 +96,22 @@ session ends."
                                  etaf-telega--model (reverse messages)))))
           :sent (lambda (message)
                   (report (lambda ()
-                            (let ((text (plist-get message :text)))
-                              (when (equal (etaf-telega-model-draft etaf-telega--model) text)
-                                (etaf-telega-model-set-draft etaf-telega--model "")))
-                            (etaf-telega-model-append-message etaf-telega--model message))))
+                            (clear-draft-for (plist-get message :text))
+                            (etaf-telega-model-set-compose etaf-telega--model nil)
+                            (etaf-telega-model-append-message etaf-telega--model message)
+                            (when (plist-get message :id)
+                              (etaf-telega-model-set-selected
+                               etaf-telega--model (plist-get message :id))))))
+          :edited (lambda (message)
+                    (report (lambda ()
+                              (clear-draft-for (plist-get message :text))
+                              (etaf-telega-model-set-compose etaf-telega--model nil)
+                              (etaf-telega-model-replace-message
+                               etaf-telega--model message))))
+          :deleted (lambda (id)
+                     (report (lambda ()
+                               (etaf-telega-model-remove-message
+                                etaf-telega--model id))))
           :message (lambda (message)
                      (report (lambda ()
                                (etaf-telega-model-append-message
@@ -119,16 +142,24 @@ session ends."
   "Return visible client facts for BUFFER without network I/O."
   (with-current-buffer (or buffer (current-buffer))
     (let* ((model etaf-telega--model)
-           (runtime (etaf-runtime-for-buffer (current-buffer)))
-           (chat (and model (etaf-telega-model-chat model))))
+           (runtime (etaf-telega--runtime))
+           (chat (and model (etaf-telega-model-chat model)))
+           (compose (and model (etaf-telega-model-compose model))))
       (list :status (and model (etaf-telega-model-status model))
             :chats (length (and model (etaf-telega-model-chats model)))
             :chat (plist-get chat :id)
             :messages (length (and model (etaf-telega-model-messages model)))
+            :selected (and model (etaf-telega-model-selected-id model))
+            :compose (plist-get compose :kind)
             :draft (and model (etaf-telega-model-draft model))
             :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
 
-(defun etaf-telega--select-relative (delta)
+(defun etaf-telega--compose-focus ()
+  "Focus the in-layout composer and begin native editing."
+  (when-let* ((runtime (etaf-telega--runtime)))
+    (etaf-text-input-begin runtime 'telega-composer)))
+
+(defun etaf-telega--move-chat (delta)
   "Move the chat selection by DELTA entries."
   (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
          (chats (etaf-telega-model-chats model))
@@ -144,12 +175,12 @@ session ends."
 (defun etaf-telega-next-chat ()
   "Select the next chat in the list."
   (interactive)
-  (etaf-telega--select-relative 1))
+  (etaf-telega--move-chat 1))
 
 (defun etaf-telega-previous-chat ()
   "Select the previous chat in the list."
   (interactive)
-  (etaf-telega--select-relative -1))
+  (etaf-telega--move-chat -1))
 
 (defun etaf-telega-first-chat ()
   "Select the first conversation in the chat list."
@@ -171,37 +202,125 @@ session ends."
   (let ((chat (etaf-telega-model-chat etaf-telega--model)))
     (when chat (etaf-telega-open-chat chat))))
 
-(defun etaf-telega-edit ()
+(defun etaf-telega--move-message (delta)
+  "Move the message selection by DELTA messages."
+  (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
+    (etaf-telega-model-move-selection model delta)
+    (etaf-telega--paint)))
+
+(defun etaf-telega-next-message ()
+  "Select the next message in the conversation."
+  (interactive)
+  (etaf-telega--move-message 1))
+
+(defun etaf-telega-previous-message ()
+  "Select the previous message in the conversation."
+  (interactive)
+  (etaf-telega--move-message -1))
+
+(defun etaf-telega-compose ()
   "Focus the composer for typing."
   (interactive)
-  (let ((runtime (etaf-runtime-for-buffer (current-buffer))))
-    (when runtime (etaf-text-input-begin runtime 'telega-composer))))
+  (etaf-telega--compose-focus))
+
+(defun etaf-telega-selected-message ()
+  "Return the selected message or signal a user error."
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (message (etaf-telega-model-selected-message model)))
+    (or message (user-error "先选中一条消息"))))
+
+(defun etaf-telega-reply ()
+  "Compose a reply to the selected message."
+  (interactive)
+  (let ((message (etaf-telega-selected-message)))
+    (etaf-telega-model-set-compose etaf-telega--model
+                                   (list :kind 'reply :target message))
+    (etaf-telega--paint)
+    (etaf-telega--compose-focus)))
+
+(defun etaf-telega-edit ()
+  "Edit the selected outgoing message in the composer."
+  (interactive)
+  (let* ((message (etaf-telega-selected-message))
+         (model etaf-telega--model))
+    (unless (plist-get message :outgoing)
+      (user-error "只能编辑自己发送的消息"))
+    (etaf-telega-model-set-compose
+     model (list :kind 'edit :target message :draft (etaf-telega-model-draft model)))
+    (etaf-telega-model-set-draft model (or (plist-get message :text) ""))
+    (etaf-telega--paint)
+    (etaf-telega--compose-focus)))
+
+(defun etaf-telega-cancel-compose ()
+  "Cancel the active reply or edit.
+An edit restores the draft that was present before editing began."
+  (interactive)
+  (let ((model etaf-telega--model)
+        (compose (and etaf-telega--model (etaf-telega-model-compose etaf-telega--model))))
+    (when compose
+      (when (eq (plist-get compose :kind) 'edit)
+        (etaf-telega-model-set-draft model (or (plist-get compose :draft) "")))
+      (etaf-telega-model-set-compose model nil)
+      (etaf-telega--paint))))
+
+(defun etaf-telega-copy ()
+  "Copy the selected message's text."
+  (interactive)
+  (let ((message (etaf-telega-selected-message)))
+    (kill-new (or (plist-get message :text) ""))
+    (etaf-telega-model-set-status etaf-telega--model "已复制消息")
+    (etaf-telega--paint)))
+
+(defun etaf-telega-delete ()
+  "Delete the selected message after confirmation."
+  (interactive)
+  (let ((message (etaf-telega-selected-message)))
+    (when (yes-or-no-p "删除这条消息？")
+      (etaf-telega-backend-delete etaf-telega--backend message)
+      (when etaf-telega--paint-pending (etaf-telega--paint)))))
 
 (defun etaf-telega-send (text)
-  "Send TEXT to the selected chat.
-The draft stays until the backend accepts the message, so a failure keeps the
-text available for retry."
+  "Send TEXT to the selected chat, honouring the compose state.
+A reply carries its quoted message; an edit replaces the selected message.
+The draft stays until the backend accepts it, so a failure keeps the text
+available for retry."
   (interactive)
   (unless (etaf-telega-model-chat etaf-telega--model)
     (user-error "先选择一个对话"))
   (unless (string-empty-p (string-trim text))
-    (etaf-telega-backend-send etaf-telega--backend text))
+    (let ((compose (etaf-telega-model-compose etaf-telega--model)))
+      (pcase (plist-get compose :kind)
+        ('reply (etaf-telega-backend-send etaf-telega--backend text
+                                          (plist-get compose :target)))
+        ('edit (etaf-telega-backend-edit etaf-telega--backend
+                                         (plist-get compose :target) text))
+        (_ (etaf-telega-backend-send etaf-telega--backend text)))))
   (when etaf-telega--paint-pending (etaf-telega--paint)))
 
 (defun etaf-telega-keep-draft (text)
-  "Keep TEXT as the draft after leaving the composer."
+  "Handle leaving the composer with TEXT.
+An edit restores the draft captured before editing; any other text stays
+available as the next draft."
   (when etaf-telega--model
-    (etaf-telega-model-set-draft etaf-telega--model text))
+    (let ((compose (etaf-telega-model-compose etaf-telega--model)))
+      (if (eq (plist-get compose :kind) 'edit)
+          (etaf-telega-model-set-draft etaf-telega--model
+                                       (or (plist-get compose :draft) ""))
+        (etaf-telega-model-set-draft etaf-telega--model text))
+      (when compose
+        (etaf-telega-model-set-compose etaf-telega--model nil))))
   (when etaf-telega--paint-pending (etaf-telega--paint)))
 
 (defvar etaf-telega-mode-map
   (let ((map (make-sparse-keymap)))
     (dolist (pair '(("j" . etaf-telega-next-chat) ("k" . etaf-telega-previous-chat)
-                    ("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
                     ("C-n" . etaf-telega-next-chat) ("C-p" . etaf-telega-previous-chat)
                     ("M-<" . etaf-telega-first-chat) ("M->" . etaf-telega-last-chat)
+                    ("n" . etaf-telega-next-message) ("p" . etaf-telega-previous-message)
+                    ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
+                    ("d" . etaf-telega-delete) ("c" . etaf-telega-copy)
+                    ("i" . etaf-telega-compose)
                     ("RET" . etaf-telega-reload-chat)
-                    ("i" . etaf-telega-edit) ("e" . etaf-telega-edit)
                     ("g" . etaf-telega-reload-chat)
                     ("q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))

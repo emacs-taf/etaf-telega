@@ -17,6 +17,8 @@
 ;;   :message  (message plist)          one later message for the selected
 ;;             chat; the application appends it in reading order
 ;;   :sent     (message plist)          accepted outgoing message
+;;   :edited   (message plist)          message whose text was replaced
+;;   :deleted  (id)                     id of a removed message
 ;;   :error    (string)                 readable failure
 ;;
 ;; `etaf-telega-backend-telega' starts and observes Telega's own server and
@@ -35,8 +37,14 @@
 (cl-defgeneric etaf-telega-backend-select (backend chat-id)
   "Make CHAT-ID current in BACKEND and load its recent history.")
 
-(cl-defgeneric etaf-telega-backend-send (backend text)
-  "Send TEXT through BACKEND.")
+(cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to)
+  "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.")
+
+(cl-defgeneric etaf-telega-backend-edit (backend message text)
+  "Replace MESSAGE's text with TEXT through BACKEND.")
+
+(cl-defgeneric etaf-telega-backend-delete (backend message)
+  "Delete MESSAGE through BACKEND.")
 
 (cl-defgeneric etaf-telega-backend-stop (backend)
   "Release BACKEND's connection without touching Telega's account data.")
@@ -44,7 +52,7 @@
 ;;; Fake backend
 
 (cl-defstruct etaf-telega-backend-fake
-  chats histories sent responder callbacks)
+  chats histories sent responder callbacks chat-id replies)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -70,6 +78,7 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (cl-defmethod etaf-telega-backend-select ((backend etaf-telega-backend-fake)
                                           chat-id)
   "Report BACKEND's fixed history for CHAT-ID."
+  (setf (etaf-telega-backend-fake-chat-id backend) chat-id)
   (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                  :messages)))
     (funcall report
@@ -77,15 +86,57 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                                  (etaf-telega-backend-fake-histories backend)))))
   chat-id)
 
-(cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake) text)
+(cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake)
+                                        text &optional reply-to)
   "Record TEXT and invoke BACKEND's responder."
   (push text (etaf-telega-backend-fake-sent backend))
+  (when reply-to
+    (push (cons text (plist-get reply-to :id))
+          (etaf-telega-backend-fake-replies backend)))
   (when-let* ((responder (etaf-telega-backend-fake-responder backend)))
     (funcall responder backend text))
   text)
 
+(cl-defmethod etaf-telega-backend-edit ((backend etaf-telega-backend-fake)
+                                        message text)
+  "Replace MESSAGE's stored text with TEXT and report the result."
+  (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+         (updated (copy-tree message)))
+    (setf (plist-get updated :text) text
+          (plist-get updated :edited) t)
+    (puthash chat-id
+             (cl-mapcar (lambda (item)
+                          (if (equal (plist-get item :id) (plist-get message :id))
+                              updated item))
+                        (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+             (etaf-telega-backend-fake-histories backend))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :edited)))
+      (funcall report (copy-tree updated)))
+    text))
+
+(cl-defmethod etaf-telega-backend-delete ((backend etaf-telega-backend-fake)
+                                          message)
+  "Remove MESSAGE from BACKEND's stored history and report its id."
+  (let ((chat-id (etaf-telega-backend-fake-chat-id backend)))
+    (puthash chat-id
+             (cl-remove (plist-get message :id)
+                        (gethash chat-id (etaf-telega-backend-fake-histories backend))
+                        :key (lambda (item) (plist-get item :id)) :test #'equal)
+             (etaf-telega-backend-fake-histories backend))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :deleted)))
+      (funcall report (plist-get message :id)))
+    (plist-get message :id)))
+
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
+
+(defun etaf-telega-backend-fake-message (backend id)
+  "Return BACKEND's stored message with ID, or nil."
+  (cl-find id (gethash (etaf-telega-backend-fake-chat-id backend)
+                       (etaf-telega-backend-fake-histories backend))
+           :key (lambda (item) (plist-get item :id)) :test #'equal))
 
 (defun etaf-telega-backend-fake-deliver (backend message)
   "Report MESSAGE as arriving in BACKEND's selected chat."
@@ -95,12 +146,16 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 
 (defun etaf-telega-backend-fake-complete (backend text)
   "Report TEXT as accepted by BACKEND, exactly like a server acknowledgement."
-  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
-                                 :sent)))
-    (funcall report (list :id (1+ (length (etaf-telega-backend-fake-sent backend)))
-                          :outgoing t :sender "我"
-                          :time (format-time-string "%H:%M")
-                          :text text))))
+  (let* ((reply-id (cdr (assoc text (etaf-telega-backend-fake-replies backend))))
+         (reply (and reply-id (etaf-telega-backend-fake-message backend reply-id))))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :sent)))
+      (funcall report
+               (append (list :id (1+ (length (etaf-telega-backend-fake-sent backend)))
+                             :outgoing t :sender "我"
+                             :time (format-time-string "%H:%M")
+                             :text text)
+                       (when reply (list :reply reply)))))))
 
 ;;; Telega backend
 
@@ -111,6 +166,8 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (declare-function telega--getChatHistory "telega-tdlib"
                   (chat from-msg-id offset &optional limit only-local callback))
 (declare-function telega--sendMessage "telega-tdlib" (chat imc &rest args))
+(declare-function telega--editMessageText "telega-tdlib" (msg imc &rest args))
+(declare-function telega--deleteMessages "telega-tdlib" (messages &optional revoke))
 (declare-function telega--on-updateMessageSendFailed "telega-tdlib-events" (event))
 (declare-function telega-msg-content-text "telega-msg"
                   (msg &optional with-speech-recognition-p))
@@ -130,11 +187,12 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 
 (defun etaf-telega-backend-telega--project-chat (chat)
   "Return CHAT's projection plist."
-  (list :id (plist-get chat :id)
-        :title (or (ignore-errors (telega-chat-title chat)) "?")
-        :preview ""
-        :unread (or (plist-get chat :unread_count) 0)
-        :order (or (plist-get chat :order) 0)))
+  (let ((last (plist-get chat :last_message)))
+    (list :id (plist-get chat :id)
+          :title (or (ignore-errors (telega-chat-title chat)) "?")
+          :preview (or (ignore-errors (telega-msg-content-text last)) "")
+          :unread (or (plist-get chat :unread_count) 0)
+          :order (or (plist-get chat :order) 0))))
 
 (defun etaf-telega-backend-telega--project-message (message)
   "Return MESSAGE's projection plist."
@@ -145,6 +203,9 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                     "")
         :time (format-time-string "%H:%M"
                                   (seconds-to-time (or (plist-get message :date) 0)))
+        :date (format-time-string "%Y-%m-%d"
+                                  (seconds-to-time (or (plist-get message :date) 0)))
+        :edited (eq t (plist-get message :edit_date))
         :text (or (ignore-errors (telega-msg-content-text message)) "")))
 
 (defun etaf-telega-backend-telega--chats ()
@@ -197,13 +258,19 @@ every other message reaches the application through `:message'."
                (projected (etaf-telega-backend-telega--project-message message))
                (pending (etaf-telega-backend-telega-pending backend))
                (text (plist-get projected :text))
-               (ack (and (plist-get projected :outgoing) (member text pending))))
+               (record (cl-find text pending
+                                :key (lambda (item) (plist-get item :text))
+                                :test #'equal))
+               (ack (and (plist-get projected :outgoing) record)))
           (if ack
               (progn
                 (setf (etaf-telega-backend-telega-pending backend)
-                      (delete text pending))
+                      (delq record pending))
                 (when-let* ((report (plist-get callbacks :sent)))
-                  (funcall report projected)))
+                  (funcall report
+                           (append projected
+                                   (when (plist-get record :reply)
+                                     (list :reply (plist-get record :reply)))))))
             (when-let* ((report (plist-get callbacks :message)))
               (funcall report projected))))))))
 
@@ -259,8 +326,8 @@ account and its database."
                (funcall report (error-message-string err)))))))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-telega)
-                                        text)
-  "Send TEXT to the selected Telega chat.
+                                        text &optional reply-to)
+  "Send TEXT to the selected Telega chat, replying to REPLY-TO.
 Telega confirms the message asynchronously through its message hook, so the
 draft stays until `etaf-telega-backend-telega--message' accepts it; immediate
 failures are reported without keeping a half-send."
@@ -268,17 +335,64 @@ failures are reported without keeping a half-send."
          (chat (and chat-id (telega-chat-get chat-id))))
     (unless chat
       (error "没有选中的对话"))
-    (push text (etaf-telega-backend-telega-pending backend))
+    (push (list :text text :reply reply-to)
+          (etaf-telega-backend-telega-pending backend))
     (condition-case err
         (telega--sendMessage
          chat (list :@type "inputMessageText"
-                    :text (list :@type "formattedText" :text text)))
+                    :text (list :@type "formattedText" :text text))
+         (when reply-to
+           (list :@type "inputMessageReplyToMessage"
+                 :message_id (plist-get reply-to :id) :quote nil)))
       (error
        (setf (etaf-telega-backend-telega-pending backend)
-             (delete text (etaf-telega-backend-telega-pending backend)))
+             (cl-remove text (etaf-telega-backend-telega-pending backend)
+                        :key (lambda (item) (plist-get item :text)) :test #'equal))
        (etaf-telega-backend-telega--report
         backend :error (error-message-string err))))
     text))
+
+(defun etaf-telega-backend-telega--error-p (result)
+  "Return non-nil when RESULT is a TDLib error object."
+  (equal (plist-get result :@type) "error"))
+
+(cl-defmethod etaf-telega-backend-edit ((backend etaf-telega-backend-telega)
+                                        message text)
+  "Replace MESSAGE's text with TEXT through Telega."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (target (list :chat_id chat-id :id (plist-get message :id))))
+    (condition-case err
+        (telega--editMessageText
+         target (list :@type "inputMessageText"
+                      :text (list :@type "formattedText" :text text))
+         :callback
+         (lambda (result)
+           (cond
+            ((etaf-telega-backend-telega--error-p result)
+             (etaf-telega-backend-telega--report
+              backend :error (format "编辑失败：%s" (plist-get result :message))))
+            (t (when-let* ((report (plist-get callbacks :edited)))
+                 (funcall report
+                          (etaf-telega-backend-telega--project-message result)))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))
+    text))
+
+(cl-defmethod etaf-telega-backend-delete ((backend etaf-telega-backend-telega)
+                                          message)
+  "Delete MESSAGE from the selected Telega chat."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (target (list :chat_id chat-id :id (plist-get message :id))))
+    (condition-case err
+        (progn
+          (telega--deleteMessages (list target))
+          (when-let* ((report (plist-get callbacks :deleted)))
+            (funcall report (plist-get message :id))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))
+    (plist-get message :id)))
 
 (cl-defmethod etaf-telega-backend-stop ((backend etaf-telega-backend-telega))
   "Stop observing Telega without closing its server or account."

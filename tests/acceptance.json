@@ -59,6 +59,36 @@
       "name": "etaf-telega-tests-first-and-last-chat-commands",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "The first and last chat commands jump to the ends of the conversation list."
+    },
+    {
+      "name": "etaf-telega-tests-message-keys-move-the-selection",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Selecting a chat selects its newest message and the n/p keys move the selection."
+    },
+    {
+      "name": "etaf-telega-tests-reply-quotes-the-selected-message",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Replying to the selected message sends the text with its quote and clears the mode."
+    },
+    {
+      "name": "etaf-telega-tests-edit-replaces-the-selected-message",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Editing the selected outgoing message prefills the composer, replaces the text and marks it edited."
+    },
+    {
+      "name": "etaf-telega-tests-cancel-edit-restores-the-draft",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Cancelling an edit restores the draft captured before editing began."
+    },
+    {
+      "name": "etaf-telega-tests-delete-removes-the-selected-message",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Deleting the selected message removes it and moves the selection."
+    },
+    {
+      "name": "etaf-telega-tests-copy-yanks-the-selected-message",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Copying the selected message puts its text on the kill ring."
     }
   ]
 }

@@ -83,7 +83,7 @@
     (etaf-telega-test--with-client buffer backend
       (etaf-telega-select-chat 1)
       (with-current-buffer buffer
-        (etaf-telega-edit)
+        (etaf-telega-compose)
         (should (plist-get (etaf-telega-info buffer) :editing))
         (insert "今晚见")
         (call-interactively (key-binding (kbd "RET"))))
@@ -97,7 +97,7 @@
     (etaf-telega-test--with-client buffer backend
       (etaf-telega-select-chat 1)
       (with-current-buffer buffer
-        (etaf-telega-edit)
+        (etaf-telega-compose)
         (insert "未确认")
         (call-interactively (key-binding (kbd "RET"))))
       (should (equal (plist-get (etaf-telega-info buffer) :draft) "未确认"))
@@ -143,7 +143,7 @@
     (etaf-telega-test--with-client buffer backend
       (etaf-telega-select-chat 1)
       (with-current-buffer buffer
-        (etaf-telega-edit)
+        (etaf-telega-compose)
         (insert "草稿")
         (call-interactively (key-binding (kbd "RET"))))
       (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
@@ -161,6 +161,84 @@
     (should (equal (plist-get (etaf-telega-info buffer) :chat) 2))
     (with-current-buffer buffer (call-interactively #'etaf-telega-first-chat))
     (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))))
+
+(ert-deftest etaf-telega-tests-message-keys-move-the-selection ()
+  "The n/p keys move the message selection like Telega's chat buffer."
+  (etaf-telega-test--with-client buffer nil
+    (etaf-telega-select-chat 1)
+    (should (equal (plist-get (etaf-telega-info buffer) :selected) 12))
+    (with-current-buffer buffer (call-interactively #'etaf-telega-previous-message))
+    (should (equal (plist-get (etaf-telega-info buffer) :selected) 11))
+    (with-current-buffer buffer (call-interactively #'etaf-telega-next-message))
+    (should (equal (plist-get (etaf-telega-info buffer) :selected) 12))))
+
+(ert-deftest etaf-telega-tests-reply-quotes-the-selected-message ()
+  "r arms a reply; the next send carries the quote and clears the mode."
+  (let ((backend (etaf-telega-test--backend
+                  (lambda (fake text) (etaf-telega-backend-fake-complete fake text)))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (with-current-buffer buffer
+        (call-interactively #'etaf-telega-previous-message)
+        (call-interactively #'etaf-telega-reply)
+        (should (eq (plist-get (etaf-telega-info buffer) :compose) 'reply))
+        (insert "收到")
+        (call-interactively (key-binding (kbd "RET"))))
+      (should (equal (cdr (assoc "收到" (etaf-telega-backend-fake-replies backend))) 11))
+      (should (null (plist-get (etaf-telega-info buffer) :compose)))
+      (should (equal (plist-get (etaf-telega-info buffer) :draft) ""))
+      (should (string-match-p "↩ Alice：你好" (etaf-telega-test--text buffer))))))
+
+(ert-deftest etaf-telega-tests-edit-replaces-the-selected-message ()
+  "e prefills the composer; sending replaces the message and marks it edited."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (with-current-buffer buffer
+        (call-interactively #'etaf-telega-edit)
+        (should (eq (plist-get (etaf-telega-info buffer) :compose) 'edit))
+        (should (equal (plist-get (etaf-telega-info buffer) :draft) "在的"))
+        (insert "！")
+        (call-interactively (key-binding (kbd "RET"))))
+      (should (null (plist-get (etaf-telega-info buffer) :compose)))
+      (should (equal (plist-get (etaf-telega-backend-fake-message backend 12) :text)
+                     "在的！"))
+      (should (string-match-p "（已编辑）" (etaf-telega-test--text buffer))))))
+
+(ert-deftest etaf-telega-tests-cancel-edit-restores-the-draft ()
+  "C-c C-k on an edit restores the draft captured before editing."
+  (etaf-telega-test--with-client buffer nil
+    (etaf-telega-select-chat 1)
+    (with-current-buffer buffer
+      (etaf-telega-compose)
+      (insert "草稿")
+      (call-interactively (key-binding (kbd "C-c C-k"))))
+    (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
+    (with-current-buffer buffer
+      (call-interactively #'etaf-telega-edit)
+      (should (equal (plist-get (etaf-telega-info buffer) :draft) "在的"))
+      (insert "！")
+      (call-interactively (key-binding (kbd "C-c C-k"))))
+    (should (null (plist-get (etaf-telega-info buffer) :compose)))
+    (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))))
+
+(ert-deftest etaf-telega-tests-delete-removes-the-selected-message ()
+  "d deletes the selected message and moves the selection."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (with-current-buffer buffer (call-interactively #'etaf-telega-delete)))
+      (should (equal (plist-get (etaf-telega-info buffer) :messages) 1))
+      (should (equal (plist-get (etaf-telega-info buffer) :selected) 11))
+      (should-not (etaf-telega-backend-fake-message backend 12)))))
+
+(ert-deftest etaf-telega-tests-copy-yanks-the-selected-message ()
+  "c copies the selected message's text to the kill ring."
+  (etaf-telega-test--with-client buffer nil
+    (etaf-telega-select-chat 1)
+    (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
+    (should (equal (current-kill 0) "在的"))))
 
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here

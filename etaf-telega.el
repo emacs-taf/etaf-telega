@@ -44,10 +44,26 @@
 ;; Select the last conversation in the chat list.
 ;; Function: etaf-telega-reload-chat ()
 ;; Reload the selected conversation's recent history.
-;; Function: etaf-telega-edit ()
+;; Function: etaf-telega-compose ()
 ;; Focus the in-layout composer and begin native editing.
+;; Function: etaf-telega-next-message ()
+;; Select the next message in the conversation (Telega's n).
+;; Function: etaf-telega-previous-message ()
+;; Select the previous message in the conversation (Telega's p).
+;; Function: etaf-telega-reply ()
+;; Compose a reply to the selected message; the next send quotes it.
+;; Function: etaf-telega-edit ()
+;; Edit the selected outgoing message in the composer.
+;; Function: etaf-telega-cancel-compose ()
+;; Cancel the active reply or edit; an edit restores its previous draft.
+;; Function: etaf-telega-copy ()
+;; Copy the selected message's text to the kill ring.
+;; Function: etaf-telega-delete ()
+;; Delete the selected message after confirmation.
 ;; Function: etaf-telega-send (text)
-;; Send TEXT to the selected chat; the draft stays until the backend accepts it.
+;; Send TEXT to the selected chat; a reply carries its quote and an edit
+;; replaces the selected message.  The draft stays until the backend accepts
+;; the change.
 ;; Function: etaf-telega-info (&optional buffer)
 ;; Return visible client facts (status, chat count, selection, message count,
 ;; draft, editing session) without network I/O.
@@ -64,6 +80,10 @@
 ;; Confirm TEXT as accepted by BACKEND, exactly like a server acknowledgement.
 ;; Function: etaf-telega-backend-fake-deliver (backend message)
 ;; Report MESSAGE as newly arrived in BACKEND's selected chat.
+;; Function: etaf-telega-backend-fake-message (backend id)
+;; Return BACKEND's stored projection of the message with ID, or nil.
+;; Function: etaf-telega-backend-fake-replies (backend)
+;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
 ;; Variable: etaf-telega-buffer-name
 ;; Buffer name of the mounted client.
 
