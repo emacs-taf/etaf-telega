@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "load_path": [
+    ".",
+    "lisp",
+    "tests",
+    "../../etaf",
+    "../../etaf-ui",
+    "../../ebox",
+    "../../ecss"
+  ],
+  "support": [],
+  "cases": [
+    {
+      "name": "etaf-telega-tests-open-mounts-and-close-releases",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Opening mounts the chat list and connection status; closing releases the client."
+    },
+    {
+      "name": "etaf-telega-tests-select-chat-loads-history",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Selecting a chat loads and shows its recent messages."
+    },
+    {
+      "name": "etaf-telega-tests-composer-sends-and-clears-on-ack",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "The in-layout composer sends typed text and clears it only after acceptance."
+    },
+    {
+      "name": "etaf-telega-tests-draft-survives-until-ack",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "An unacknowledged send keeps the draft text for retry."
+    },
+    {
+      "name": "etaf-telega-tests-chat-keys-move-the-selection",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "The next and previous chat keys move the selected conversation."
+    }
+  ]
+}
