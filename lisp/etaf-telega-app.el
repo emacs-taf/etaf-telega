@@ -43,6 +43,9 @@ Tests bind this to a fake backend factory so no network is touched.")
 (defvar-local etaf-telega--paint-pending nil
   "Non-nil when a paint was requested while the composer was editing.")
 
+(defvar-local etaf-telega--older-pending nil
+  "Non-nil while an older history page is in flight.")
+
 (defun etaf-telega--window ()
   "Return the window showing the current buffer, if any."
   (get-buffer-window (current-buffer) t))
@@ -56,6 +59,32 @@ Tests bind this to a fake backend factory so no network is touched.")
   "Return the mounted runtime of the current buffer, if any."
   (etaf-runtime-for-buffer (current-buffer)))
 
+(defun etaf-telega--pane-rows ()
+  "Return the message pane's visible row count."
+  (max 3 (- (or (and (etaf-telega--window) (window-body-height (etaf-telega--window)))
+                24)
+            7)))
+
+(defun etaf-telega--layout ()
+  "Return current width, pane rows, all message rows and the visible slice.
+The viewport follows the newest message unless the model holds a scroll
+offset; every value is clamped so the slice always fits the pane."
+  (let* ((width (etaf-telega--width))
+         (pane (etaf-telega--pane-rows))
+         (model etaf-telega--model)
+         (rows (if model
+                   (etaf-telega-message-rows
+                    (etaf-telega-model-messages model)
+                    (etaf-telega-model-selected-id model) width)
+                 nil))
+         (total (length rows))
+         (scroll (min (if model (etaf-telega-model-scroll model) 0)
+                      (max 0 (- total pane))))
+         (end (- total scroll))
+         (start (max 0 (- end pane))))
+    (list :width width :pane pane :rows rows :total total :scroll scroll
+          :start start :end end :visible (cl-subseq rows start end))))
+
 (defun etaf-telega--paint ()
   "Reproject the model into the mounted runtime.
 A native editing session owns the buffer text, so its paint waits until the
@@ -66,10 +95,13 @@ session ends."
         (if (etaf-text-input-active-p runtime)
             (setq etaf-telega--paint-pending t)
           (setq etaf-telega--paint-pending nil)
-          (etaf-mount (current-buffer)
-                      (etaf-telega-view etaf-telega--model (etaf-telega--width))
-                      (list :viewport-width (window-body-width (etaf-telega--window) t)
-                            :viewport-height (window-body-height (etaf-telega--window))))
+          (let ((layout (etaf-telega--layout)))
+            (etaf-mount (current-buffer)
+                        (etaf-telega-view etaf-telega--model
+                                          (plist-get layout :width)
+                                          (plist-get layout :visible))
+                        (list :viewport-width (window-body-width (etaf-telega--window) t)
+                              :viewport-height (window-body-height (etaf-telega--window)))))
           (setq-local cursor-type nil))))))
 
 (defun etaf-telega--callbacks (buffer)
@@ -96,8 +128,17 @@ session ends."
                                  etaf-telega--model (reverse messages)))))
           :older (lambda (messages)
                    (report (lambda ()
-                             (etaf-telega-model-prepend-messages
-                              etaf-telega--model (reverse messages)))))
+                             (let* ((older (reverse messages))
+                                    (added (length (etaf-telega-message-rows
+                                                    older nil (etaf-telega--width)))))
+                               (etaf-telega-model-prepend-messages etaf-telega--model older)
+                               ;; A reader who scrolled away keeps their place;
+                               ;; a follower still watches the newest rows.
+                               (when (> (etaf-telega-model-scroll etaf-telega--model) 0)
+                                 (etaf-telega-model-set-scroll
+                                  etaf-telega--model
+                                  (+ (etaf-telega-model-scroll etaf-telega--model) added)))
+                               (setq etaf-telega--older-pending nil)))))
           :sent (lambda (message)
                   (report (lambda ()
                             (clear-draft-for (plist-get message :text))
@@ -131,6 +172,7 @@ session ends."
   (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
         (id (plist-get chat :id)))
     (etaf-telega-model-select model chat)
+    (setq etaf-telega--older-pending nil)
     (etaf-telega--paint)
     (etaf-telega-backend-select etaf-telega--backend id)))
 
@@ -154,6 +196,7 @@ session ends."
             :chat (plist-get chat :id)
             :messages (length (and model (etaf-telega-model-messages model)))
             :selected (and model (etaf-telega-model-selected-id model))
+            :scroll (and model (etaf-telega-model-scroll model))
             :compose (plist-get compose :kind)
             :draft (and model (etaf-telega-model-draft model))
             :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
@@ -212,15 +255,72 @@ session ends."
   (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
          (messages (etaf-telega-model-messages model)))
     (unless (etaf-telega-model-chat model) (user-error "先选择一个对话"))
-    (when messages
+    (when (and messages (not etaf-telega--older-pending))
+      (setq etaf-telega--older-pending t)
       (etaf-telega-backend-history etaf-telega--backend
                                    :before (plist-get (car messages) :id)))))
+
+(defun etaf-telega--scroll-to-selection ()
+  "Adjust the viewport so the selected message's rows are visible."
+  (let* ((layout (etaf-telega--layout))
+         (rows (plist-get layout :rows))
+         (selected (etaf-telega-model-selected-id etaf-telega--model))
+         (start (plist-get layout :start))
+         (end (plist-get layout :end))
+         (pane (plist-get layout :pane))
+         (total (plist-get layout :total))
+         (first (cl-position selected rows
+                             :key (lambda (row) (plist-get (plist-get row :message) :id))
+                             :test #'equal))
+         (last (cl-position selected rows
+                            :key (lambda (row) (plist-get (plist-get row :message) :id))
+                            :test #'equal :from-end t)))
+    (when first
+      (cond ((< first start)
+             (etaf-telega-model-set-scroll
+              etaf-telega--model (max 0 (- total (min total (+ first pane))))))
+            ((>= last end)
+             (etaf-telega-model-set-scroll
+              etaf-telega--model (max 0 (- total (1+ last)))))))))
 
 (defun etaf-telega--move-message (delta)
   "Move the message selection by DELTA messages."
   (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
     (etaf-telega-model-move-selection model delta)
+    (etaf-telega--scroll-to-selection)
     (etaf-telega--paint)))
+
+(defun etaf-telega--scroll-to (offset)
+  "Set the message viewport OFFSET, clamped to the loaded history."
+  (let ((layout (etaf-telega--layout)))
+    (etaf-telega-model-set-scroll
+     etaf-telega--model
+     (min (max 0 (or offset 0))
+          (max 0 (- (plist-get layout :total) (plist-get layout :pane)))))
+    (etaf-telega--paint)))
+
+(defun etaf-telega-page-up (&optional rows)
+  "Scroll the message viewport towards older messages by ROWS.
+At the top of the loaded history, load an older page."
+  (interactive)
+  (let* ((layout (etaf-telega--layout))
+         (step (or rows (max 1 (1- (plist-get layout :pane))))))
+    (etaf-telega--scroll-to (+ (plist-get layout :scroll) step))
+    (when (and (zerop (plist-get (etaf-telega--layout) :start))
+               (plist-get (etaf-telega--layout) :total))
+      (etaf-telega-load-more))))
+
+(defun etaf-telega-page-down (&optional rows)
+  "Scroll the message viewport towards newer messages by ROWS."
+  (interactive)
+  (let* ((layout (etaf-telega--layout))
+         (step (or rows (max 1 (1- (plist-get layout :pane))))))
+    (etaf-telega--scroll-to (- (plist-get layout :scroll) step))))
+
+(defun etaf-telega-follow ()
+  "Scroll the message viewport to the newest message."
+  (interactive)
+  (etaf-telega--scroll-to 0))
 
 (defun etaf-telega-next-message ()
   "Select the next message in the conversation."
@@ -331,6 +431,8 @@ available as the next draft."
                     ("C-n" . etaf-telega-next-chat) ("C-p" . etaf-telega-previous-chat)
                     ("M-<" . etaf-telega-first-chat) ("M->" . etaf-telega-last-chat)
                     ("n" . etaf-telega-next-message) ("p" . etaf-telega-previous-message)
+                    ("SPC" . etaf-telega-page-down) ("S-SPC" . etaf-telega-page-up)
+                    ("C-v" . etaf-telega-page-down) ("M-v" . etaf-telega-page-up)
                     ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
                     ("d" . etaf-telega-delete) ("c" . etaf-telega-copy)
                     ("i" . etaf-telega-compose)
@@ -358,9 +460,13 @@ available as the next draft."
     ;; The client owns the current window; never let display-buffer split it.
     (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
-      (etaf-mount buffer (etaf-telega-view etaf-telega--model (etaf-telega--width))
-                  (list :viewport-width (window-body-width (etaf-telega--window) t)
-                        :viewport-height (window-body-height (etaf-telega--window))))
+      (let ((layout (etaf-telega--layout)))
+        (etaf-mount buffer
+                    (etaf-telega-view etaf-telega--model
+                                      (plist-get layout :width)
+                                      (plist-get layout :visible))
+                    (list :viewport-width (window-body-width (etaf-telega--window) t)
+                          :viewport-height (window-body-height (etaf-telega--window)))))
       (setq-local cursor-type nil)
       (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t)
       (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks buffer))

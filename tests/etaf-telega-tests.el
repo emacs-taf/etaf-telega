@@ -240,6 +240,35 @@
     (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
     (should (equal (current-kill 0) "在的"))))
 
+(ert-deftest etaf-telega-tests-viewport-scrolls-and-pages-the-history ()
+  "The pane shows the newest rows, follows, scrolls and pages at the top."
+  (let* ((histories (make-hash-table :test #'equal))
+         (all (cl-loop for n from 30 downto 1
+                       collect (list :id n :sender "Alice" :time "10:00"
+                                     :text (format "第 %d 条" n)))))
+    (puthash 1 all histories)
+    (let ((backend (etaf-telega-backend-fake-create
+                    :chats (list (list :id 1 :title "Alice" :unread 0))
+                    :histories histories)))
+      (etaf-telega-test--with-client buffer backend
+        (etaf-telega-select-chat 1)
+        (dotimes (_ 5)
+          (with-current-buffer buffer (call-interactively #'etaf-telega-load-more)))
+        (should (equal (plist-get (etaf-telega-info buffer) :messages) 12))
+        (let ((text (etaf-telega-test--text buffer)))
+          (should (string-match-p "第 30 条" text))
+          (should-not (string-match-p "第 19 条" text)))
+        ;; Walking the selection to an older message scrolls it into view.
+        (dotimes (_ 11)
+          (with-current-buffer buffer (call-interactively #'etaf-telega-previous-message)))
+        (should (string-match-p "第 19 条" (etaf-telega-test--text buffer)))
+        ;; Scrolling at the top loads the next older page, and following
+        ;; returns to the newest rows.
+        (with-current-buffer buffer (call-interactively #'etaf-telega-page-up))
+        (should (equal (plist-get (etaf-telega-info buffer) :messages) 14))
+        (with-current-buffer buffer (call-interactively #'etaf-telega-follow))
+        (should (string-match-p "第 30 条" (etaf-telega-test--text buffer)))))))
+
 (ert-deftest etaf-telega-tests-day-separators-group-messages ()
   "Messages from different days carry their day labels."
   (let* ((histories (make-hash-table :test #'equal)))

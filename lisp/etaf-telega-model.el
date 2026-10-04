@@ -27,6 +27,7 @@
         :messages (etaf-ref nil :name 'etaf-telega-messages)
         :selected (etaf-ref nil :name 'etaf-telega-selected)
         :compose (etaf-ref nil :name 'etaf-telega-compose)
+        :scroll (etaf-ref 0 :name 'etaf-telega-scroll)
         :draft (etaf-ref "" :name 'etaf-telega-draft)))
 
 (defun etaf-telega-model-status (model)
@@ -61,6 +62,14 @@
   "Return MODEL's compose state, a plist with `:kind' and `:target'."
   (etaf-value (plist-get model :compose)))
 
+(defun etaf-telega-model-scroll (model)
+  "Return MODEL's message viewport offset, in display rows above the newest."
+  (or (etaf-value (plist-get model :scroll)) 0))
+
+(defun etaf-telega-model-set-scroll (model offset)
+  "Set MODEL's viewport OFFSET, in display rows above the newest."
+  (setf (etaf-value (plist-get model :scroll)) (max 0 (or offset 0))))
+
 (defun etaf-telega-model-message-by-id (model id)
   "Return MODEL's message with ID, or nil."
   (cl-find id (etaf-telega-model-messages model)
@@ -85,18 +94,20 @@
 
 (defun etaf-telega-model-select (model chat)
   "Select CHAT in MODEL.
-The loaded history, the message selection and any compose state clear until
-the backend reports the chat's messages."
+The loaded history, the message selection, the viewport and any compose
+state clear until the backend reports the chat's messages."
   (setf (etaf-value (plist-get model :chat)) chat
         (etaf-value (plist-get model :messages)) nil
         (etaf-value (plist-get model :selected)) nil
+        (etaf-value (plist-get model :scroll)) 0
         (etaf-value (plist-get model :compose)) nil))
 
 (defun etaf-telega-model-set-messages (model messages)
-  "Replace MODEL's messages with MESSAGES and select the newest one."
+  "Replace MODEL's messages with MESSAGES and follow the newest one."
   (setf (etaf-value (plist-get model :messages)) messages
         (etaf-value (plist-get model :selected))
-        (and messages (plist-get (car (last messages)) :id))))
+        (and messages (plist-get (car (last messages)) :id))
+        (etaf-value (plist-get model :scroll)) 0))
 
 (defun etaf-telega-model-set-selected (model id)
   "Select the message with ID in MODEL."

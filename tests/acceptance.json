@@ -91,6 +91,11 @@
       "purpose": "Copying the selected message puts its text on the kill ring."
     },
     {
+      "name": "etaf-telega-tests-viewport-scrolls-and-pages-the-history",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "The message viewport shows the newest rows, scrolls to older ones and pages at the top."
+    },
+    {
       "name": "etaf-telega-tests-load-more-prepends-older-history",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "Loading an older page prepends it before the loaded history and keeps the selection."

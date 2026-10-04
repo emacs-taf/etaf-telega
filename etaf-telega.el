@@ -44,6 +44,13 @@
 ;; Select the last conversation in the chat list.
 ;; Function: etaf-telega-load-more ()
 ;; Load an older page of the selected chat's history.
+;; Function: etaf-telega-page-up (&optional rows)
+;; Scroll the message viewport towards older messages; at the top of the
+;; loaded history it loads an older page.
+;; Function: etaf-telega-page-down (&optional rows)
+;; Scroll the message viewport towards newer messages.
+;; Function: etaf-telega-follow ()
+;; Scroll the message viewport to the newest message.
 ;; Function: etaf-telega-reload-chat ()
 ;; Reload the selected conversation's recent history.
 ;; Function: etaf-telega-compose ()
@@ -68,7 +75,7 @@
 ;; the change.
 ;; Function: etaf-telega-info (&optional buffer)
 ;; Return visible client facts (status, chat count, selection, message count,
-;; draft, editing session) without network I/O.
+;; viewport offset, draft, editing session) without network I/O.
 ;; Variable: etaf-telega-backend-create-function
 ;; Return a fresh backend for `etaf-telega-open'.  Bind it to a fake backend
 ;; factory for tests and offline demonstrations.
