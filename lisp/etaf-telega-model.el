@@ -69,9 +69,20 @@
   (setf (etaf-value (plist-get model :messages)) messages))
 
 (defun etaf-telega-model-append-message (model message)
-  "Append MESSAGE to MODEL's message list."
-  (setf (etaf-value (plist-get model :messages))
-        (append (etaf-telega-model-messages model) (list message))))
+  "Append MESSAGE to MODEL's message list.
+A message whose non-nil id is already present replaces its earlier copy, so a
+confirmation delivered twice still shows once."
+  (let* ((id (plist-get message :id))
+         (messages (etaf-telega-model-messages model)))
+    (setf (etaf-value (plist-get model :messages))
+          (if (and id (cl-find id messages
+                               :key (lambda (item) (plist-get item :id))
+                               :test #'equal))
+              (cl-mapcar (lambda (existing)
+                           (if (equal (plist-get existing :id) id)
+                               message existing))
+                         messages)
+            (append messages (list message))))))
 
 (defun etaf-telega-model-set-draft (model text)
   "Set MODEL's composer draft to TEXT."

@@ -114,5 +114,54 @@
     (with-current-buffer buffer (call-interactively #'etaf-telega-previous-chat))
     (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))))
 
+(ert-deftest etaf-telega-tests-live-message-appends-to-the-open-chat ()
+  "A message arriving while a chat is open is appended to its history."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (should (equal (plist-get (etaf-telega-info buffer) :messages) 2))
+      (etaf-telega-backend-fake-deliver
+       backend (list :id 13 :sender "Alice" :time "10:02" :text "晚上见"))
+      (should (equal (plist-get (etaf-telega-info buffer) :messages) 3))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "晚上见" text))
+        (should (< (string-match-p "在的" text)
+                   (string-match-p "晚上见" text)))))))
+
+(ert-deftest etaf-telega-tests-live-message-deduplicates-by-id ()
+  "Delivering the same message twice still shows one copy."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (let ((message (list :id 13 :sender "Alice" :time "10:02" :text "晚上见")))
+        (etaf-telega-backend-fake-deliver backend message)
+        (etaf-telega-backend-fake-deliver backend (copy-tree message)))
+      (should (equal (plist-get (etaf-telega-info buffer) :messages) 3)))))
+
+(ert-deftest etaf-telega-tests-live-copy-of-the-draft-keeps-it-until-ack ()
+  "Another client's copy of the draft text does not clear the draft."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (with-current-buffer buffer
+        (etaf-telega-edit)
+        (insert "草稿")
+        (call-interactively (key-binding (kbd "RET"))))
+      (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
+      (etaf-telega-backend-fake-deliver
+       backend (list :id 14 :outgoing t :sender "我" :time "10:03" :text "草稿"))
+      (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
+      (etaf-telega-backend-fake-complete backend "草稿")
+      (should (equal (plist-get (etaf-telega-info buffer) :draft) "")))))
+
+(ert-deftest etaf-telega-tests-first-and-last-chat-commands ()
+  "The first/last chat commands jump to the ends of the list."
+  (etaf-telega-test--with-client buffer nil
+    (etaf-telega-select-chat 1)
+    (with-current-buffer buffer (call-interactively #'etaf-telega-last-chat))
+    (should (equal (plist-get (etaf-telega-info buffer) :chat) 2))
+    (with-current-buffer buffer (call-interactively #'etaf-telega-first-chat))
+    (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))))
+
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here

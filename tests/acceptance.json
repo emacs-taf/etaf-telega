@@ -35,6 +35,26 @@
       "name": "etaf-telega-tests-chat-keys-move-the-selection",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "The next and previous chat keys move the selected conversation."
+    },
+    {
+      "name": "etaf-telega-tests-live-message-appends-to-the-open-chat",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "A message arriving while a chat is open is appended after the loaded history."
+    },
+    {
+      "name": "etaf-telega-tests-live-message-deduplicates-by-id",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Delivering the same message twice still shows one copy."
+    },
+    {
+      "name": "etaf-telega-tests-live-copy-of-the-draft-keeps-it-until-ack",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Another client's copy of the draft text does not clear the draft; only the send acknowledgement does."
+    },
+    {
+      "name": "etaf-telega-tests-first-and-last-chat-commands",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "The first and last chat commands jump to the ends of the conversation list."
     }
   ]
 }

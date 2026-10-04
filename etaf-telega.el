@@ -38,6 +38,12 @@
 ;; Select the next conversation in the chat list.
 ;; Function: etaf-telega-previous-chat ()
 ;; Select the previous conversation in the chat list.
+;; Function: etaf-telega-first-chat ()
+;; Select the first conversation in the chat list.
+;; Function: etaf-telega-last-chat ()
+;; Select the last conversation in the chat list.
+;; Function: etaf-telega-reload-chat ()
+;; Reload the selected conversation's recent history.
 ;; Function: etaf-telega-edit ()
 ;; Focus the in-layout composer and begin native editing.
 ;; Function: etaf-telega-send (text)

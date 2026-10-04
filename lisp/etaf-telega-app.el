@@ -89,6 +89,10 @@ session ends."
                               (when (equal (etaf-telega-model-draft etaf-telega--model) text)
                                 (etaf-telega-model-set-draft etaf-telega--model "")))
                             (etaf-telega-model-append-message etaf-telega--model message))))
+          :message (lambda (message)
+                     (report (lambda ()
+                               (etaf-telega-model-append-message
+                                etaf-telega--model message))))
           :error (lambda (message)
                    (report (lambda ()
                              (etaf-telega-model-set-status etaf-telega--model
@@ -147,6 +151,20 @@ session ends."
   (interactive)
   (etaf-telega--select-relative -1))
 
+(defun etaf-telega-first-chat ()
+  "Select the first conversation in the chat list."
+  (interactive)
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (chats (etaf-telega-model-chats model)))
+    (when chats (etaf-telega-open-chat (car chats)))))
+
+(defun etaf-telega-last-chat ()
+  "Select the last conversation in the chat list."
+  (interactive)
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (chats (etaf-telega-model-chats model)))
+    (when chats (etaf-telega-open-chat (car (last chats))))))
+
 (defun etaf-telega-reload-chat ()
   "Reload the selected chat's history."
   (interactive)
@@ -180,6 +198,8 @@ text available for retry."
   (let ((map (make-sparse-keymap)))
     (dolist (pair '(("j" . etaf-telega-next-chat) ("k" . etaf-telega-previous-chat)
                     ("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
+                    ("C-n" . etaf-telega-next-chat) ("C-p" . etaf-telega-previous-chat)
+                    ("M-<" . etaf-telega-first-chat) ("M->" . etaf-telega-last-chat)
                     ("RET" . etaf-telega-reload-chat)
                     ("i" . etaf-telega-edit) ("e" . etaf-telega-edit)
                     ("g" . etaf-telega-reload-chat)
