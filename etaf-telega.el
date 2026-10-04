@@ -69,6 +69,9 @@
 
 ;;; Code:
 
+(add-to-list 'load-path (expand-file-name "lisp"
+                                          (file-name-directory
+                                           (or load-file-name buffer-file-name))))
 (require 'etaf-telega-app)
 (require 'etaf-telega-backend)
 
