@@ -61,15 +61,24 @@
     (buffer-substring-no-properties (point-min) (point-max))))
 
 (defun etaf-telega-gui--geometry ()
-  "Check the complete canvas and its window fit."
+  "Check the complete canvas and its window fit.
+The canvas must never overflow the window and must fill its width, so a
+hidden reserve or an over-tall row budget cannot slip through the suite."
   (let* ((window (get-buffer-window etaf-telega-gui--buffer))
          (size (and window (window-text-pixel-size window)))
+         (body-width (and window (window-body-width window t)))
+         (body-height (and window (window-body-height window t)))
+         (char-width (and window (frame-char-width (window-frame window))))
          (editing (with-current-buffer etaf-telega-gui--buffer
                     (and (etaf-runtime-for-buffer (current-buffer))
                          (etaf-text-input-active-p (etaf-runtime-for-buffer (current-buffer)))))))
     (and window
          (or editing (etaf-gui-verifier-canvas-filled-p etaf-telega-gui--buffer))
-         (or editing (<= (car size) (window-body-width window t)))
+         (or editing (<= (car size) body-width))
+         ;; `window-text-pixel-size' omits trailing whitespace, so a filled
+         ;; canvas may measure up to two character cells short.
+         (or editing (>= (car size) (- body-width (* 2 char-width))))
+         (or editing (<= (cdr size) body-height))
          (= (window-hscroll window) 0)
          (let ((info (etaf-telega-gui--info)))
            (and (integerp (plist-get info :chats))

@@ -481,6 +481,7 @@ visible at LIST-WIDTH cells while the active screen fills the right pane."
       (flex :flex-direction 'column :width (list 'ch list-width)
             :flex-grow 0 :flex-basis (list 'ch list-width)
             :min-width (list 'ch list-width)
+            :height 'stretch :overflow 'hidden
             :background-color (etaf-telega-color :surface)
             :border-right (list '(px 1) 'solid (etaf-telega-color :hairline))
         (etaf-telega-filter-bar :filters filters :filter filter

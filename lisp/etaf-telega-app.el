@@ -84,15 +84,27 @@ remaining pane; the narrow layout owns the full width."
   "Return the mounted runtime of the current buffer, if any."
   (etaf-runtime-for-buffer (current-buffer)))
 
+(defun etaf-telega--line-pixels (&optional window)
+  "Return one display line's height in pixels for WINDOW."
+  (let ((window (or window (etaf-telega--window))))
+    (max 1 (if window (frame-char-height (window-frame window)) 16))))
+
+(defun etaf-telega--body-pixels (&optional window)
+  "Return WINDOW's body height in pixels."
+  (let ((window (or window (etaf-telega--window))))
+    (max 1 (if window (window-body-height window t) 400))))
+
 (defun etaf-telega--chat-rows ()
-  "Return the sidebar's visible chat row count.
-Each conversation row is two lines tall; the remainder covers the title
-bar, the filter tabs and their borders."
-  (max 1 (/ (max 2 (- (or (and (etaf-telega--window)
-                               (window-body-height (etaf-telega--window)))
-                         24)
-                      4))
-            2)))
+  "Return the conversation column's visible chat row count.
+The row budget is measured in pixels: every row is two text lines plus its
+separator, and the title bar and filter tabs own the rest of the frame, so
+the list never overflows the window."
+  (let* ((window (etaf-telega--window))
+         (line (etaf-telega--line-pixels window))
+         (chrome (+ (* 4 line) 2))       ; title bar and tabs, each with a border
+         (row (+ (* 2 line) 1))          ; two text lines plus separator
+         (available (- (etaf-telega--body-pixels window) chrome)))
+    (max 1 (floor available row))))
 
 (defconst etaf-telega-filters
   '((main . "全部") (important . "重要") (online . "在线")
@@ -154,10 +166,14 @@ leaves the selection off screen."
 
 (defun etaf-telega--pane-rows ()
   "Return the message pane's visible row count.
-The remainder covers the title bar and the composer."
-  (max 3 (- (or (and (etaf-telega--window) (window-body-height (etaf-telega--window)))
-                24)
-            8)))
+The pane owns the frame minus the title bar and the composer; both are
+measured in pixels so the newest message never slides below the window."
+  (let* ((window (etaf-telega--window))
+         (line (etaf-telega--line-pixels window))
+         (chrome (+ (* 2 line) 1        ; title bar and its border
+                    (* 3 line) 1))      ; composer padding and its border
+         (available (- (etaf-telega--body-pixels window) chrome)))
+    (max 3 (floor available line))))
 
 (defun etaf-telega--blocks-slice (blocks pane scroll)
   "Return the visible slice of BLOCKS for PANE rows with SCROLL rows above."
