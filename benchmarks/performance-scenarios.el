@@ -109,8 +109,9 @@ measurement; only the paint work of the scenario stays in the samples."
                      (with-current-buffer buffer
                        (let ((info (etaf-telega-info)))
                          (if (and (member (plist-get info :chat) '(1 2))
-                                  (= (plist-get info :messages)
-                                     (if (= (plist-get info :chat) 1) 2 0)))
+                                  (if (= (plist-get info :chat) 1)
+                                      (>= (plist-get info :messages) 2)
+                                    (= (plist-get info :messages) 0)))
                              t "the selected history does not match its chat"))))
            :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
 

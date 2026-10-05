@@ -249,37 +249,58 @@ Inside a paint batch the request waits for the batch to finish."
     (etaf-telega--paint-now)))
 
 (defun etaf-telega--view ()
-  "Return the current projection of the model."
-  (let ((layout (etaf-telega--layout))
-        (chat-layout (etaf-telega--chat-layout))
-        (chats (and etaf-telega--model (etaf-telega-model-chats etaf-telega--model))))
+  "Return the current projection of the model.
+The panes receive lazy slices, so the runtime tracks the model refs inside
+each pane and a change re-renders only that pane."
+  (let ((buffer (current-buffer)))
     (etaf-telega-view etaf-telega--model
-                      (plist-get layout :width)
-                      (plist-get layout :visible)
-                      (plist-get chat-layout :chats)
-                      (etaf-telega--filter-items chats)
-                      (etaf-telega-model-filter etaf-telega--model)
-                      (etaf-telega-model-screen etaf-telega--model)
+                      (etaf-telega--width)
+                      (etaf-telega--list-width)
+                      (etaf-telega--split-p)
+                      (lambda ()
+                        (with-current-buffer buffer
+                          (plist-get (etaf-telega--layout) :visible)))
+                      (lambda ()
+                        (with-current-buffer buffer
+                          (etaf-telega--chat-layout)))
+                      (lambda ()
+                        (with-current-buffer buffer
+                          (etaf-telega--filter-items
+                           (etaf-telega-model-chats etaf-telega--model))))
+                      (lambda ()
+                        (with-current-buffer buffer
+                          (or (etaf-telega-model-selected-message etaf-telega--model)
+                              (list))))
                       #'etaf-telega-select-filter
                       #'etaf-telega-back
-                      #'etaf-telega--run-action
-                      (etaf-telega--list-width)
-                      (etaf-telega--split-p))))
+                      #'etaf-telega--run-action)))
+
+(defun etaf-telega--remount ()
+  "Rebuild the mounted view in place.
+The runtime tracks model refs by itself, so a rebuild is only needed when
+non-reactive state changed (the palette, an explicit reload)."
+  (when (and etaf-telega--model (etaf-telega--window))
+    (setq etaf-telega--paint-pending nil)
+    (etaf-mount (current-buffer) (lambda () (etaf-telega--view))
+                (list :viewport-width (window-body-width (etaf-telega--window) t)
+                      :viewport-height (window-body-height (etaf-telega--window))))
+    (setq-local cursor-type nil)))
 
 (defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
-A native editing session owns the buffer text, so its paint waits until the
-session ends."
+A mounted runtime already subscribes every view expression to the model
+refs, so a paint drains its pending work instead of rebuilding the whole
+runtime; only the first paint mounts.  A native editing session owns the
+buffer text, so its paint waits until the session ends."
   (when (and etaf-telega--model (etaf-telega--window))
     (let ((runtime (etaf-telega--runtime)))
-      (when runtime
-        (if (etaf-text-input-active-p runtime)
-            (setq etaf-telega--paint-pending t)
-          (setq etaf-telega--paint-pending nil)
-          (etaf-mount (current-buffer) (etaf-telega--view)
-                      (list :viewport-width (window-body-width (etaf-telega--window) t)
-                            :viewport-height (window-body-height (etaf-telega--window))))
-          (setq-local cursor-type nil))))))
+      (cond
+       ((and runtime (etaf-text-input-active-p runtime))
+        (setq etaf-telega--paint-pending t))
+       ((and runtime (etaf-runtime-mounted-p runtime))
+        (setq etaf-telega--paint-pending nil)
+        (etaf-runtime-flush runtime))
+       (t (etaf-telega--remount))))))
 
 (defvar-local etaf-telega--history-end nil
   "Non-nil once the backend reported an empty older page for the chat.")
@@ -289,6 +310,11 @@ session ends."
 
 (defvar-local etaf-telega--history-retry-count 0
   "Times the fill walk retried a stalled newest page for this chat.")
+
+(defvar-local etaf-telega--fill-active nil
+  "Non-nil while the history fill walk is loading pages.
+Backend paints stay deferred so one fill shows one final frame instead of
+one frame per page.")
 
 (defconst etaf-telega--history-fill-limit 40
   "Most older pages one fill walk loads before it gives up.")
@@ -325,25 +351,39 @@ finish downloading the rest moments later, so a stalled fill waits for it."
                    (lambda ()
                      (when (buffer-live-p buffer)
                        (with-current-buffer buffer
-                         (etaf-telega--retry-history chat-id))))))))
+                         (etaf-telega--retry-history chat-id))))))
+    t))
 
 (defun etaf-telega--fill-history ()
   "Load older pages until the pane is filled or the history ends.
 Opening a conversation must show its history, not only the page TDLib
 happened to have cached; an empty page ends the walk, with a few retries
-of the newest page while a stalled backend may still be downloading it."
-  (when (and (etaf-telega-model-chat etaf-telega--model)
-             (etaf-telega-model-messages etaf-telega--model)
-             (not (etaf-telega--history-filled-p)))
-    (let ((chat (etaf-telega-model-chat etaf-telega--model)))
-      (cond
-       ((and (not etaf-telega--history-end)
-             (< etaf-telega--history-fill-count etaf-telega--history-fill-limit)
-             (not etaf-telega--older-pending))
-        (cl-incf etaf-telega--history-fill-count)
-        (etaf-telega-load-more))
-       (etaf-telega--history-end
-        (etaf-telega--schedule-history-retry (plist-get chat :id)))))))
+of the newest page while a stalled backend may still be downloading it.
+Backend paints are deferred until the walk settles, so one fill shows one
+final frame instead of one frame per page."
+  (let ((chat (etaf-telega-model-chat etaf-telega--model)))
+    (cond
+     ((null chat) nil)
+     ((null (etaf-telega-model-messages etaf-telega--model))
+      (when etaf-telega--fill-active
+        (setq etaf-telega--fill-active nil)
+        (etaf-telega--paint)))
+     ((etaf-telega--history-filled-p)
+      (setq etaf-telega--fill-active nil)
+      (etaf-telega--paint))
+     ((and (not etaf-telega--history-end)
+           (< etaf-telega--history-fill-count etaf-telega--history-fill-limit)
+           (not etaf-telega--older-pending))
+      (setq etaf-telega--fill-active t)
+      (cl-incf etaf-telega--history-fill-count)
+      (etaf-telega-load-more))
+     (etaf-telega--history-end
+      (setq etaf-telega--fill-active nil)
+      (etaf-telega--paint)
+      (etaf-telega--schedule-history-retry (plist-get chat :id)))
+     (t
+      (setq etaf-telega--fill-active nil)
+      (etaf-telega--paint)))))
 
 (defun etaf-telega--callbacks (buffer)
   "Return backend callbacks that update BUFFER's model."
@@ -351,7 +391,8 @@ of the newest page while a stalled backend may still be downloading it."
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (funcall update)
-                    (etaf-telega--paint))))
+                    (unless etaf-telega--fill-active
+                      (etaf-telega--paint)))))
               (clear-draft-for (text)
                 (when (equal (etaf-telega-model-draft etaf-telega--model) text)
                   (etaf-telega-model-set-draft etaf-telega--model ""))))
@@ -416,6 +457,7 @@ of the newest page while a stalled backend may still be downloading it."
                                  etaf-telega--model describe))))
           :error (lambda (message)
                    (report (lambda ()
+                             (setq etaf-telega--fill-active nil)
                              (etaf-telega-model-set-status etaf-telega--model
                                                            (format "错误：%s" message))))))))
 
@@ -428,7 +470,8 @@ of the newest page while a stalled backend may still be downloading it."
       (etaf-telega-model-select model chat)
       (setq etaf-telega--history-end nil
             etaf-telega--history-fill-count 0
-            etaf-telega--history-retry-count 0)
+            etaf-telega--history-retry-count 0
+            etaf-telega--fill-active t)
       (etaf-telega-model-set-cursor model (plist-get chat :id))
       (etaf-telega--scroll-chat-to-selection)
       (etaf-telega-model-set-screen model 'chat)
@@ -863,7 +906,7 @@ available as the next draft."
   (setq etaf-telega-theme
         (if (eq (etaf-telega--theme-name) 'dark) 'light 'dark))
   (when etaf-telega--model
-    (etaf-telega--paint))
+    (etaf-telega--remount))
   (message "etaf-telega 主题：%s" (if (eq (etaf-telega--theme-name) 'dark)
                                       "dark" "light")))
 
@@ -915,7 +958,7 @@ available as the next draft."
     ;; The client owns the current window; never let display-buffer split it.
     (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
-      (etaf-mount buffer (etaf-telega--view)
+      (etaf-mount buffer (lambda () (etaf-telega--view))
                   (list :viewport-width (window-body-width (etaf-telega--window) t)
                         :viewport-height (window-body-height (etaf-telega--window))))
       (setq-local cursor-type nil)
@@ -953,7 +996,7 @@ instead of only refitting the tree."
     (with-current-buffer buffer
       (setq etaf-telega--resize-timer nil)
       (when (and etaf-telega--model (etaf-telega--window))
-        (etaf-telega--paint-now)))))
+        (etaf-telega--remount)))))
 
 (defun etaf-telega--schedule-resize-repaint ()
   "Repaint this client shortly after its window size settles."
