@@ -95,6 +95,16 @@
 ;; Function: etaf-telega-info (&optional buffer)
 ;; Return visible client facts (status, chat count, selection, message count,
 ;; viewport offset, draft, editing session) without network I/O.
+;; Function: etaf-telega-toggle-theme ()
+;; Switch the open client between the dark and light palettes and repaint.
+;; Function: etaf-telega-color (key)
+;; Return the active palette's color for KEY; every view reads its colors
+;; through this function so a theme switch stays consistent.
+;; Function: etaf-telega-sender-color (name)
+;; Return the active palette's stable accent color for sender NAME.
+;; Variable: etaf-telega-theme
+;; Palette selection: `auto' follows the frame's background mode, `dark' and
+;; `light' pin a maintained palette.
 ;; Variable: etaf-telega-backend-create-function
 ;; Return a fresh backend for `etaf-telega-open'.  Bind it to a fake backend
 ;; factory for tests and offline demonstrations.

@@ -144,6 +144,11 @@
       "name": "etaf-telega-tests-chat-actions-update-the-stored-chat",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "The chat actions set the read state and toggle pin and mute."
+    },
+    {
+      "name": "etaf-telega-tests-theme-selection-drives-the-palette",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Pinning the dark or light palette changes the colors views read, and the toggle command switches between them."
     }
   ]
 }

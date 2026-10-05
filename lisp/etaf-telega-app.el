@@ -702,6 +702,16 @@ available as the next draft."
        ('copy (etaf-telega-copy))))
     ((or 'pin 'mute 'read) (etaf-telega--chat-action action))))
 
+(defun etaf-telega-toggle-theme ()
+  "Switch the client between the dark and light palettes."
+  (interactive)
+  (setq etaf-telega-theme
+        (if (eq (etaf-telega--theme-name) 'dark) 'light 'dark))
+  (when etaf-telega--model
+    (etaf-telega--paint))
+  (message "etaf-telega 主题：%s" (if (eq (etaf-telega--theme-name) 'dark)
+                                      "dark" "light")))
+
 (defun etaf-telega-quit ()
   "Leave the current screen, or close the client from the chat list."
   (interactive)
@@ -723,6 +733,7 @@ available as the next draft."
                     ("i" . etaf-telega-compose)
                     ("RET" . etaf-telega-return)
                     ("g" . etaf-telega-reload-chat)
+                    ("T" . etaf-telega-toggle-theme)
                     ("q" . etaf-telega-quit)))
       (define-key map (kbd (car pair)) (cdr pair)))
     map)

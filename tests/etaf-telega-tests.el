@@ -443,4 +443,18 @@
     (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 0))))
 
 (provide 'etaf-telega-tests)
+(ert-deftest etaf-telega-tests-theme-selection-drives-the-palette ()
+  "Pinning a theme changes the colors the views read, and the toggle flips it."
+  (let ((etaf-telega-theme 'dark))
+    (should (equal (etaf-telega-color :bg) "#0d1117"))
+    (should (equal (etaf-telega-color :ink) "#e6edf3"))
+    (let ((dark-sender (etaf-telega-sender-color "Alice")))
+      (setq etaf-telega-theme 'light)
+      (should (equal (etaf-telega-color :bg) "#ffffff"))
+      (should-not (equal (etaf-telega-color :ink) "#e6edf3"))
+      (should-not (equal (etaf-telega-sender-color "Alice") dark-sender))))
+  (let ((etaf-telega-theme 'light))
+    (call-interactively #'etaf-telega-toggle-theme)
+    (should (eq etaf-telega-theme 'dark))))
+
 ;;; etaf-telega-tests.el ends here
