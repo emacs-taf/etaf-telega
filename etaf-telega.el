@@ -70,6 +70,16 @@
 ;; Scroll the message viewport towards newer messages.
 ;; Function: etaf-telega-follow ()
 ;; Scroll the message viewport to the newest message.
+;; Function: etaf-telega-scroll-chats (delta)
+;; Scroll the conversation column by DELTA rows (positive walks towards later
+;; conversations) without moving the selected chat; the wheel uses it.
+;; Function: etaf-telega-scroll-messages (delta)
+;; Scroll the message viewport by DELTA rows; scrolling past the top of the
+;; loaded history loads an older page.
+;; Function: etaf-telega-wheel-up (event)
+;; Scroll the pane under EVENT towards older content (sidebar or messages).
+;; Function: etaf-telega-wheel-down (event)
+;; Scroll the pane under EVENT towards newer content (sidebar or messages).
 ;; Function: etaf-telega-reload-chat ()
 ;; Reload the selected conversation's recent history.
 ;; Function: etaf-telega-compose ()

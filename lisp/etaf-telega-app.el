@@ -141,8 +141,9 @@ the list never overflows the window."
 
 (defun etaf-telega--chat-layout ()
   "Return the sidebar's visible chat slice.
-The slice follows the selected conversation, so walking the list never
-leaves the selection off screen."
+The slice starts at the model's chat scroll offset; moving the cursor or
+scrolling the list adjusts that offset instead of forcing the selection
+into view on every layout."
   (let* ((model etaf-telega--model)
          (chats (if model
                     (etaf-telega--filter-chats (etaf-telega-model-chats model)
@@ -150,19 +151,28 @@ leaves the selection off screen."
                   nil))
          (total (length chats))
          (visible (etaf-telega--chat-rows))
-         (selected (and model (etaf-telega-model-cursor model)))
-         (index (cl-position selected chats
-                             :key (lambda (chat) (plist-get chat :id))
-                             :test #'equal))
          (start (min (max 0 (if model (etaf-telega-model-chat-scroll model) 0))
                      (max 0 (- total visible)))))
+    (list :total total :visible visible :start start :end (+ start visible)
+          :chats (cl-subseq chats start (min total (+ start visible))))))
+
+(defun etaf-telega--scroll-chat-to-selection ()
+  "Scroll the conversation column so the selected chat stays visible."
+  (let* ((model etaf-telega--model)
+         (chats (and model
+                     (etaf-telega--filter-chats (etaf-telega-model-chats model)
+                                                (etaf-telega-model-filter model))))
+         (visible (etaf-telega--chat-rows))
+         (index (cl-position (and model (etaf-telega-model-cursor model)) chats
+                             :key (lambda (chat) (plist-get chat :id))
+                             :test #'equal))
+         (start (or (and model (etaf-telega-model-chat-scroll model)) 0)))
     (when index
       (cond ((< index start) (setq start index))
             ((>= index (+ start visible)) (setq start (1+ (- index visible))))))
-    (setq start (min (max 0 start) (max 0 (- total visible))))
-    (when model (etaf-telega-model-set-chat-scroll model start))
-    (list :total total :visible visible :start start :end (+ start visible)
-          :chats (cl-subseq chats start (min total (+ start visible))))))
+    (when model
+      (etaf-telega-model-set-chat-scroll
+       model (min (max 0 start) (max 0 (- (length chats) visible)))))))
 
 (defun etaf-telega--pane-rows ()
   "Return the message pane's visible row count.
@@ -271,6 +281,70 @@ session ends."
                             :viewport-height (window-body-height (etaf-telega--window))))
           (setq-local cursor-type nil))))))
 
+(defvar-local etaf-telega--history-end nil
+  "Non-nil once the backend reported an empty older page for the chat.")
+
+(defvar-local etaf-telega--history-fill-count 0
+  "Older pages the fill walk loaded since the last chat selection.")
+
+(defvar-local etaf-telega--history-retry-count 0
+  "Times the fill walk retried a stalled newest page for this chat.")
+
+(defconst etaf-telega--history-fill-limit 40
+  "Most older pages one fill walk loads before it gives up.")
+
+(defconst etaf-telega--history-retry-limit 3
+  "Times a stalled fill walk retries the newest page before giving up.")
+
+(defconst etaf-telega--history-retry-delay 0.8
+  "Seconds before a stalled fill walk asks for the newest page again.")
+
+(defun etaf-telega--history-filled-p ()
+  "Return non-nil when the loaded history already fills the pane."
+  (let ((layout (ignore-errors (etaf-telega--layout))))
+    (and layout
+         (>= (or (plist-get layout :total-height) 0)
+             (or (plist-get layout :pane) 0)))))
+
+(defun etaf-telega--retry-history (chat-id)
+  "Re-request CHAT-ID's newest page after a stalled fill walk."
+  (when-let* ((model etaf-telega--model)
+              (chat (etaf-telega-model-chat model)))
+    (when (equal (plist-get chat :id) chat-id)
+      (etaf-telega-backend-select etaf-telega--backend chat-id))))
+
+(defun etaf-telega--schedule-history-retry (chat-id)
+  "Retry CHAT-ID's newest page after a short delay.
+TDLib can answer an opening request with only its locally cached page and
+finish downloading the rest moments later, so a stalled fill waits for it."
+  (when (and chat-id (< etaf-telega--history-retry-count
+                         etaf-telega--history-retry-limit))
+    (cl-incf etaf-telega--history-retry-count)
+    (let ((buffer (current-buffer)))
+      (run-at-time etaf-telega--history-retry-delay nil
+                   (lambda ()
+                     (when (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (etaf-telega--retry-history chat-id))))))))
+
+(defun etaf-telega--fill-history ()
+  "Load older pages until the pane is filled or the history ends.
+Opening a conversation must show its history, not only the page TDLib
+happened to have cached; an empty page ends the walk, with a few retries
+of the newest page while a stalled backend may still be downloading it."
+  (when (and (etaf-telega-model-chat etaf-telega--model)
+             (etaf-telega-model-messages etaf-telega--model)
+             (not (etaf-telega--history-filled-p)))
+    (let ((chat (etaf-telega-model-chat etaf-telega--model)))
+      (cond
+       ((and (not etaf-telega--history-end)
+             (< etaf-telega--history-fill-count etaf-telega--history-fill-limit)
+             (not etaf-telega--older-pending))
+        (cl-incf etaf-telega--history-fill-count)
+        (etaf-telega-load-more))
+       (etaf-telega--history-end
+        (etaf-telega--schedule-history-retry (plist-get chat :id)))))))
+
 (defun etaf-telega--callbacks (buffer)
   "Return backend callbacks that update BUFFER's model."
   (cl-labels ((report (update)
@@ -291,8 +365,10 @@ session ends."
                              (etaf-telega-model-set-chats etaf-telega--model chats))))
           :messages (lambda (messages)
                       (report (lambda ()
+                                (setq etaf-telega--history-end (null messages))
                                 (etaf-telega-model-set-messages
-                                 etaf-telega--model (reverse messages)))))
+                                 etaf-telega--model (reverse messages))
+                                (etaf-telega--fill-history))))
           :older (lambda (messages)
                    (report (lambda ()
                              (let* ((older (reverse messages))
@@ -309,7 +385,9 @@ session ends."
                                  (etaf-telega-model-set-scroll
                                   etaf-telega--model
                                   (+ (etaf-telega-model-scroll etaf-telega--model) added)))
-                               (setq etaf-telega--older-pending nil)))))
+                               (setq etaf-telega--older-pending nil
+                                     etaf-telega--history-end (null messages))
+                               (etaf-telega--fill-history)))))
           :sent (lambda (message)
                   (report (lambda ()
                             (clear-draft-for (plist-get message :text))
@@ -348,7 +426,11 @@ session ends."
     (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
           (id (plist-get chat :id)))
       (etaf-telega-model-select model chat)
+      (setq etaf-telega--history-end nil
+            etaf-telega--history-fill-count 0
+            etaf-telega--history-retry-count 0)
       (etaf-telega-model-set-cursor model (plist-get chat :id))
+      (etaf-telega--scroll-chat-to-selection)
       (etaf-telega-model-set-screen model 'chat)
       (setq etaf-telega--older-pending nil)
       (etaf-telega--paint)
@@ -403,6 +485,7 @@ session ends."
                     chats)))
     (when next
       (etaf-telega-model-set-cursor model (plist-get next :id))
+      (etaf-telega--scroll-chat-to-selection)
       (etaf-telega--paint))))
 
 (defun etaf-telega-open-selected-chat ()
@@ -487,11 +570,25 @@ session ends."
                  (etaf-telega-model-set-scroll
                   etaf-telega--model (max 0 (- total bottom))))))))))
 
+(defun etaf-telega--selection-at-oldest-p ()
+  "Return non-nil when the selected message is the oldest loaded one."
+  (let ((model etaf-telega--model)
+        (messages (etaf-telega-model-messages etaf-telega--model)))
+    (and model messages
+         (equal (etaf-telega-model-selected-id model)
+                (plist-get (car messages) :id)))))
+
 (defun etaf-telega--move-message (delta)
-  "Move the message selection by DELTA messages."
+  "Move the message selection by DELTA messages.
+Walking past the oldest loaded message loads an older page, like Telega's
+chat buffer, so paging never strands the reader at a page boundary."
   (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
     (etaf-telega-model-move-selection model delta)
     (etaf-telega--scroll-to-selection)
+    (when (and (< delta 0)
+               (not etaf-telega--history-end)
+               (etaf-telega--selection-at-oldest-p))
+      (etaf-telega-load-more))
     (etaf-telega--paint)))
 
 (defun etaf-telega--scroll-to (offset)
@@ -520,6 +617,64 @@ At the top of the loaded history, load an older page."
   (let* ((layout (etaf-telega--layout))
          (step (or rows (max 1 (1- (plist-get layout :pane))))))
     (etaf-telega--scroll-to (- (plist-get layout :scroll) step))))
+
+(defun etaf-telega-scroll-chats (delta)
+  "Scroll the conversation column by DELTA rows.
+Positive DELTA walks toward later conversations; the selected chat is not
+moved, so the wheel browses the list without changing the selection."
+  (let* ((model etaf-telega--model)
+         (chats (and model
+                     (etaf-telega--filter-chats (etaf-telega-model-chats model)
+                                                (etaf-telega-model-filter model))))
+         (visible (etaf-telega--chat-rows))
+         (start (min (max 0 (+ (or (and model (etaf-telega-model-chat-scroll model)) 0)
+                               delta))
+                     (max 0 (- (length chats) visible)))))
+    (when model
+      (etaf-telega-model-set-chat-scroll model start)
+      (etaf-telega--paint))))
+
+(defun etaf-telega-scroll-messages (delta)
+  "Scroll the message viewport by DELTA rows.
+Positive DELTA walks toward newer messages; scrolling past the top of the
+loaded history loads an older page."
+  (let ((layout (etaf-telega--layout)))
+    (etaf-telega--scroll-to
+     (- (plist-get layout :scroll) (* delta 3)))
+    (when (and (> delta 0)
+               (zerop (plist-get (etaf-telega--layout) :start))
+               (plist-get (etaf-telega--layout) :blocks))
+      (etaf-telega-load-more))))
+
+(defun etaf-telega--wheel (event delta)
+  "Scroll the pane under EVENT by DELTA rows (positive = down)."
+  (let* ((position (event-start event))
+         (window (posn-window position)))
+    (when (and (window-live-p window) (null (posn-area position)))
+      (with-current-buffer (window-buffer window)
+        (when etaf-telega--model
+          (let* ((pixels (posn-x-y position))
+                 (column (and (consp pixels)
+                              (floor (/ (float (car pixels))
+                                        (window-font-width window)))))
+                 (screen (etaf-telega-model-screen etaf-telega--model)))
+            (cond
+             ((eq screen 'root) (etaf-telega-scroll-chats (* delta 3)))
+             ((and (etaf-telega--split-p)
+                   column
+                   (< column (etaf-telega--list-width)))
+              (etaf-telega-scroll-chats (* delta 3)))
+             (t (etaf-telega-scroll-messages delta)))))))))
+
+(defun etaf-telega-wheel-up (event)
+  "Scroll the pane under EVENT towards older content."
+  (interactive "e")
+  (etaf-telega--wheel event -1))
+
+(defun etaf-telega-wheel-down (event)
+  "Scroll the pane under EVENT towards newer content."
+  (interactive "e")
+  (etaf-telega--wheel event 1))
 
 (defun etaf-telega-follow ()
   "Scroll the message viewport to the newest message."
@@ -724,6 +879,8 @@ available as the next draft."
     (dolist (pair '(("j" . etaf-telega-next-chat) ("k" . etaf-telega-previous-chat)
                     ("C-n" . etaf-telega-next-chat) ("C-p" . etaf-telega-previous-chat)
                     ("M-<" . etaf-telega-first-chat) ("M->" . etaf-telega-last-chat)
+                    ("<wheel-up>" . etaf-telega-wheel-up)
+                    ("<wheel-down>" . etaf-telega-wheel-down)
                     ("n" . etaf-telega-next-message) ("p" . etaf-telega-previous-message)
                     ("SPC" . etaf-telega-page-down) ("S-SPC" . etaf-telega-page-up)
                     ("C-v" . etaf-telega-page-down) ("M-v" . etaf-telega-page-up)
@@ -736,6 +893,8 @@ available as the next draft."
                     ("T" . etaf-telega-toggle-theme)
                     ("q" . etaf-telega-quit)))
       (define-key map (kbd (car pair)) (cdr pair)))
+    (define-key map [wheel-up] #'etaf-telega-wheel-up)
+    (define-key map [wheel-down] #'etaf-telega-wheel-down)
     map)
   "Keys the client owns outside the composer.")
 

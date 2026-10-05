@@ -156,12 +156,32 @@ state clear until the backend reports the chat's messages."
         (etaf-value (plist-get model :scroll)) 0
         (etaf-value (plist-get model :compose)) nil))
 
+(defun etaf-telega--merge-messages (old new)
+  "Return OLD and NEW merged by message id, oldest first.
+NEW wins for an id both lists carry, so a refresh replaces an edited
+message instead of keeping the stale copy."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (message (append old new))
+      (when-let* ((id (plist-get message :id)))
+        (puthash id message table)))
+    (sort (hash-table-values table)
+          (lambda (left right)
+            (< (or (plist-get left :id) 0)
+               (or (plist-get right :id) 0))))))
+
 (defun etaf-telega-model-set-messages (model messages)
-  "Replace MODEL's messages with MESSAGES and follow the newest one."
-  (setf (etaf-value (plist-get model :messages)) messages
-        (etaf-value (plist-get model :selected))
-        (and messages (plist-get (car (last messages)) :id))
-        (etaf-value (plist-get model :scroll)) 0))
+  "Merge MESSAGES into MODEL's loaded history and follow the newest one.
+A refresh that reports only part of the cached history must not drop
+already loaded pages, so pages merge by id; an initial page selects the
+newest message, a later refresh leaves selection and viewport alone."
+  (let* ((old (etaf-telega-model-messages model))
+         (merged (etaf-telega--merge-messages old messages))
+         (newest (car (last merged))))
+    (setf (etaf-value (plist-get model :messages)) merged)
+    (unless (etaf-telega-model-selected-id model)
+      (setf (etaf-value (plist-get model :selected))
+            (and newest (plist-get newest :id))
+            (etaf-value (plist-get model :scroll)) 0))))
 
 (defun etaf-telega-model-set-selected (model id)
   "Select the message with ID in MODEL."
@@ -184,10 +204,12 @@ state clear until the backend reports the chat's messages."
   (setf (etaf-value (plist-get model :compose)) compose))
 
 (defun etaf-telega-model-prepend-messages (model messages)
-  "Prepend older MESSAGES, in reading order, to MODEL's history."
+  "Prepend older MESSAGES, in reading order, to MODEL's history.
+Overlapping pages merge by id."
   (when messages
     (setf (etaf-value (plist-get model :messages))
-          (append messages (etaf-telega-model-messages model)))))
+          (etaf-telega--merge-messages
+           (etaf-telega-model-messages model) messages))))
 
 (defun etaf-telega-model-append-message (model message)
   "Append MESSAGE to MODEL's message list.

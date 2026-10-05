@@ -365,20 +365,22 @@
                     :histories histories)))
       (etaf-telega-test--with-client buffer backend
         (etaf-telega-select-chat 1)
-        (dotimes (_ 5)
-          (with-current-buffer buffer (call-interactively #'etaf-telega-load-more)))
-        (should (equal (plist-get (etaf-telega-info buffer) :messages) 12))
+        ;; One backend page carries two messages; filling loads enough pages
+        ;; for the pane and keeps the newest rows visible.
+        (should (> (plist-get (etaf-telega-info buffer) :messages) 2))
         (let ((text (etaf-telega-test--text buffer)))
           (should (string-match-p "第 30 条" text))
-          (should-not (string-match-p "第 19 条" text)))
+          (should-not (string-match-p "第 1 条" text)))
         ;; Walking the selection to an older message scrolls it into view.
         (dotimes (_ 11)
           (with-current-buffer buffer (call-interactively #'etaf-telega-previous-message)))
         (should (string-match-p "第 19 条" (etaf-telega-test--text buffer)))
-        ;; Scrolling at the top loads the next older page, and following
+        ;; Paging at the top keeps loading older pages, and following
         ;; returns to the newest rows.
-        (with-current-buffer buffer (call-interactively #'etaf-telega-page-up))
-        (should (equal (plist-get (etaf-telega-info buffer) :messages) 14))
+        (let ((loaded (plist-get (etaf-telega-info buffer) :messages)))
+          (dotimes (_ 20)
+            (with-current-buffer buffer (call-interactively #'etaf-telega-page-up)))
+          (should (> (plist-get (etaf-telega-info buffer) :messages) loaded)))
         (with-current-buffer buffer (call-interactively #'etaf-telega-follow))
         (should (string-match-p "第 30 条" (etaf-telega-test--text buffer)))))))
 
@@ -404,25 +406,57 @@
 (ert-deftest etaf-telega-tests-load-more-prepends-older-history ()
   "Loading an older page prepends it and keeps the selection."
   (let* ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 14 :sender "Alice" :time "10:03" :text "四")
-                     (list :id 13 :sender "Alice" :time "10:02" :text "三")
-                     (list :id 12 :sender "Alice" :time "10:01" :text "二")
-                     (list :id 11 :sender "Alice" :time "10:00" :text "一"))
+    (puthash 1 (cl-loop for n from 40 downto 1
+                        collect (list :id n :sender "Alice" :time "10:00"
+                                      :text (format "第 %d 条" n)))
              histories)
     (let ((backend (etaf-telega-backend-fake-create
                     :chats (list (list :id 1 :title "Alice" :unread 0))
                     :histories histories)))
       (etaf-telega-test--with-client buffer backend
         (etaf-telega-select-chat 1)
-        (should (equal (plist-get (etaf-telega-info buffer) :messages) 2))
-        (should (equal (plist-get (etaf-telega-info buffer) :selected) 14))
-        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
-        (should (equal (plist-get (etaf-telega-info buffer) :messages) 4))
-        (should (equal (plist-get (etaf-telega-info buffer) :selected) 14))
-        (let ((text (etaf-telega-test--text buffer)))
-          (should (< (string-match-p "一" text) (string-match-p "二" text))))
-        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
-        (should (equal (plist-get (etaf-telega-info buffer) :messages) 4))))))
+        (let ((loaded (plist-get (etaf-telega-info buffer) :messages))
+              (selected (plist-get (etaf-telega-info buffer) :selected)))
+          (should (equal selected 40))
+          (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
+          (should (> (plist-get (etaf-telega-info buffer) :messages) loaded))
+          (should (equal (plist-get (etaf-telega-info buffer) :selected) selected))
+          (should (string-match-p "第 40 条" (etaf-telega-test--text buffer))))))))
+
+(ert-deftest etaf-telega-tests-open-fills-history-and-reload-keeps-it ()
+  "Opening a chat fills the pane from older pages; a reload keeps them."
+  (let* ((histories (make-hash-table :test #'equal)))
+    (puthash 1 (cl-loop for n from 24 downto 1
+                        collect (list :id n :sender "Alice" :time "10:00"
+                                      :text (format "第 %d 条" n)))
+             histories)
+    (let ((backend (etaf-telega-backend-fake-create
+                    :chats (list (list :id 1 :title "Alice" :unread 0))
+                    :histories histories)))
+      (etaf-telega-test--with-client buffer backend
+        (etaf-telega-select-chat 1)
+        (let ((filled (plist-get (etaf-telega-info buffer) :messages)))
+          ;; One backend page carries two messages: stopping at the first page
+          ;; would leave the conversation almost empty.
+          (should (> filled 2))
+          (with-current-buffer buffer (call-interactively #'etaf-telega-reload-chat))
+          (should (>= (plist-get (etaf-telega-info buffer) :messages) filled))
+          (should (string-match-p "第 24 条" (etaf-telega-test--text buffer))))))))
+
+(ert-deftest etaf-telega-tests-chat-list-scrolls-without-moving-the-cursor ()
+  "Scrolling the conversation column shows later chats; the cursor stays."
+  (let* ((chats (cl-loop for n from 1 to 60
+                         collect (list :id n :title (format "对话 %02d" n)
+                                       :unread 0)))
+         (backend (etaf-telega-backend-fake-create
+                   :chats chats :histories (make-hash-table :test #'equal))))
+    (etaf-telega-test--with-client buffer backend
+      (should (string-match-p "对话 01" (etaf-telega-test--text buffer)))
+      (let ((cursor (plist-get (etaf-telega-info buffer) :cursor)))
+        (with-current-buffer buffer (etaf-telega-scroll-chats 30))
+        (should (equal (plist-get (etaf-telega-info buffer) :cursor) cursor))
+        (should-not (string-match-p "对话 01" (etaf-telega-test--text buffer)))
+        (should (string-match-p "对话 3[0-9]" (etaf-telega-test--text buffer)))))))
 
 (ert-deftest etaf-telega-tests-opening-a-chat-reads-its-newest-page ()
   "Opening a chat accepts its newest page as read, like Telega's chatbuf."
