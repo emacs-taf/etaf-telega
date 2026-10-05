@@ -34,6 +34,16 @@
 ;; Stop observing the backend, release the runtime and kill the client buffer.
 ;; Function: etaf-telega-select-chat (id)
 ;; Select the chat ID and load its recent history.
+;; Function: etaf-telega-open-selected-chat ()
+;; Open the conversation selected in the chat list.
+;; Function: etaf-telega-return ()
+;; Open the selected conversation, or reload the open one.
+;; Function: etaf-telega-select-filter (key)
+;; Show the conversations of filter KEY (main, groups, channels, archived).
+;; Function: etaf-telega-back ()
+;; Leave the conversation screen and show the chat list.
+;; Function: etaf-telega-quit ()
+;; Leave the conversation screen, or close the client from the list.
 ;; Function: etaf-telega-next-chat ()
 ;; Select the next conversation in the chat list.
 ;; Function: etaf-telega-previous-chat ()

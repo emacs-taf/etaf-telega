@@ -96,6 +96,11 @@
       "purpose": "A long chat list renders only the rows around the selection and follows it."
     },
     {
+      "name": "etaf-telega-tests-filter-tabs-switch-the-list",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Filter tabs narrow the chat list without leaving the client buffer."
+    },
+    {
       "name": "etaf-telega-tests-viewport-scrolls-and-pages-the-history",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "The message viewport shows the newest rows, scrolls to older ones and pages at the top."

@@ -30,8 +30,12 @@
              histories)
     (setq etaf-telega-gui--backend
           (etaf-telega-backend-fake-create
-           :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02")
-                        (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"))
+           :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02"
+                              :kind 'private)
+                        (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"
+                              :kind 'group)
+                        (list :id 3 :title "每日新闻" :unread 5 :preview "头条速览" :time "08:00"
+                              :kind 'channel))
            :histories histories :responder #'etaf-telega-gui--responder))))
 
 (defun etaf-telega-gui--main ()
@@ -90,10 +94,13 @@
                       (not (string-prefix-p "错误" (plist-get (etaf-telega-info) :status)))))
                (etaf-gui-verifier-line-height-assertions etaf-telega-gui--buffer)
                (list (etaf-gui-verifier-assert
-                      "composer lives inside the layout"
-                      (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
-                             (bounds (and runtime (etaf-host-ref-bounds runtime 'telega-composer))))
-                        (and runtime (consp bounds))))))))))
+                      "composer lives inside the conversation screen"
+                      (let ((info (etaf-telega-info)))
+                        (or (not (eq (plist-get info :screen) 'chat))
+                            (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+                                   (bounds (and runtime
+                                                (etaf-host-ref-bounds runtime 'telega-composer))))
+                              (and runtime (consp bounds))))))))))))
 
 (defun etaf-telega-gui--type (text)
   "Enter TEXT into the active composer session."
@@ -120,6 +127,20 @@
            (append
             (list
              (etaf-telega-gui--action "chat-open" #'ignore #'etaf-telega-gui--idle t)
+             (etaf-telega-gui--action
+              "chat-back" (lambda (_) (execute-kbd-macro (kbd "q")))
+              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'root)) t)
+             (etaf-telega-gui--action
+              "filter-groups" (lambda (_) (etaf-telega-select-filter 'groups))
+              (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :filter) 'groups)
+                               (string-match-p "工作群" (etaf-telega-gui--text)))))
+             (etaf-telega-gui--action
+              "filter-main" (lambda (_) (etaf-telega-select-filter 'main))
+              (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :filter) 'main)
+                               (string-match-p "Alice" (etaf-telega-gui--text)))))
+             (etaf-telega-gui--action
+              "chat-open-again" (lambda (_) (execute-kbd-macro (kbd "RET")))
+              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
              (etaf-telega-gui--action
               "select-previous-message" (lambda (_) (execute-kbd-macro (kbd "p")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)) t)
@@ -205,17 +226,21 @@
                  etaf-telega-gui--backend "未发送的草稿"))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "")) t)
              (etaf-telega-gui--action
-              "next-chat" (lambda (_) (execute-kbd-macro (kbd "j")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 2)))
+              "next-chat" (lambda (_)
+                            (execute-kbd-macro (kbd "q"))
+                            (execute-kbd-macro (kbd "j")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'root)
+                     (equal (plist-get (etaf-telega-gui--info) :cursor) 2))))
              (etaf-telega-gui--action
               "previous-chat" (lambda (_) (execute-kbd-macro (kbd "k")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 1)))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
              (etaf-telega-gui--action
               "last-chat" (lambda (_) (execute-kbd-macro (kbd "M->")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 2)))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 3)))
              (etaf-telega-gui--action
               "first-chat" (lambda (_) (execute-kbd-macro (kbd "M-<")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :chat) 1)))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
              (etaf-telega-gui--action
               "reload-history" (lambda (_) (execute-kbd-macro (kbd "g")))
               (lambda (_) (= (plist-get (etaf-telega-gui--info) :messages) 1))))

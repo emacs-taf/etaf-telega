@@ -29,6 +29,9 @@
         :compose (etaf-ref nil :name 'etaf-telega-compose)
         :scroll (etaf-ref 0 :name 'etaf-telega-scroll)
         :chat-scroll (etaf-ref 0 :name 'etaf-telega-chat-scroll)
+        :cursor (etaf-ref nil :name 'etaf-telega-cursor)
+        :screen (etaf-ref 'root :name 'etaf-telega-screen)
+        :filter (etaf-ref 'main :name 'etaf-telega-filter)
         :draft (etaf-ref "" :name 'etaf-telega-draft)))
 
 (defun etaf-telega-model-status (model)
@@ -79,6 +82,30 @@
   "Set MODEL's chat list OFFSET, the first visible chat index."
   (setf (etaf-value (plist-get model :chat-scroll)) (max 0 (or offset 0))))
 
+(defun etaf-telega-model-cursor (model)
+  "Return MODEL's selected conversation id in the chat list."
+  (etaf-value (plist-get model :cursor)))
+
+(defun etaf-telega-model-set-cursor (model id)
+  "Select the conversation with ID in MODEL's chat list."
+  (setf (etaf-value (plist-get model :cursor)) id))
+
+(defun etaf-telega-model-screen (model)
+  "Return MODEL's current screen, `root' or `chat'."
+  (or (etaf-value (plist-get model :screen)) 'root))
+
+(defun etaf-telega-model-set-screen (model screen)
+  "Switch MODEL to SCREEN, `root' or `chat'."
+  (setf (etaf-value (plist-get model :screen)) screen))
+
+(defun etaf-telega-model-filter (model)
+  "Return MODEL's active chat filter key."
+  (or (etaf-value (plist-get model :filter)) 'main))
+
+(defun etaf-telega-model-set-filter (model key)
+  "Set MODEL's active chat filter to KEY."
+  (setf (etaf-value (plist-get model :filter)) key))
+
 (defun etaf-telega-model-message-by-id (model id)
   "Return MODEL's message with ID, or nil."
   (cl-find id (etaf-telega-model-messages model)
@@ -98,8 +125,17 @@
   (setf (etaf-value (plist-get model :me)) me))
 
 (defun etaf-telega-model-set-chats (model chats)
-  "Replace MODEL's chats with CHATS."
-  (setf (etaf-value (plist-get model :chats)) chats))
+  "Replace MODEL's chats with CHATS.
+The list cursor keeps its conversation when it is still present and falls
+back to the newest one."
+  (let ((current (etaf-telega-model-cursor model)))
+    (setf (etaf-value (plist-get model :chats)) chats
+          (etaf-value (plist-get model :cursor))
+          (if (and current (cl-find current chats
+                                    :key (lambda (chat) (plist-get chat :id))
+                                    :test #'equal))
+              current
+            (and chats (plist-get (car chats) :id))))))
 
 (defun etaf-telega-model-select (model chat)
   "Select CHAT in MODEL.

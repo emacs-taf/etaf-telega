@@ -271,6 +271,7 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (declare-function telega-server-live-p "telega-server" ())
 (declare-function telega-chat-get "telega-chat" (chat-id &optional offline-p))
 (declare-function telega-chat-title "telega-chat" (chat &optional fmt-type no-badges))
+(declare-function telega-chat-match-p "telega-chat" (chat chat-temex &optional no-error))
 (declare-function telega-chat-muted-p "telega-chat" (chat))
 (declare-function telega-chat-toggle-read "telega-chat" (chat))
 (declare-function telega-chat-toggle-pin "telega-chat" (chat))
@@ -308,6 +309,12 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
           :unread (or (plist-get chat :unread_count) 0)
           :pinned (eq t (plist-get chat :is_pinned))
           :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
+          :kind (cond ((ignore-errors (telega-chat-match-p chat '(type channel)))
+                       'channel)
+                      ((ignore-errors (telega-chat-match-p chat '(type private)))
+                       'private)
+                      (t 'group))
+          :archived (and (ignore-errors (telega-chat-match-p chat 'archive)) t)
           :time (if last
                     (format-time-string
                      "%H:%M" (seconds-to-time (or (plist-get last :date) 0)))

@@ -105,13 +105,15 @@
       (should (equal (plist-get (etaf-telega-info buffer) :draft) "")))))
 
 (ert-deftest etaf-telega-tests-chat-keys-move-the-selection ()
-  "The chat keys select the next and previous conversations."
+  "The chat keys move the list cursor without opening a conversation."
   (etaf-telega-test--with-client buffer nil
     (etaf-telega-select-chat 1)
+    (with-current-buffer buffer (etaf-telega-back))
     (with-current-buffer buffer (call-interactively #'etaf-telega-next-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :chat) 2))
+    (should (equal (plist-get (etaf-telega-info buffer) :cursor) 2))
+    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'root))
     (with-current-buffer buffer (call-interactively #'etaf-telega-previous-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))))
+    (should (equal (plist-get (etaf-telega-info buffer) :cursor) 1))))
 
 (ert-deftest etaf-telega-tests-live-message-appends-to-the-open-chat ()
   "A message arriving while a chat is open is appended to its history."
@@ -247,7 +249,7 @@
          (backend (etaf-telega-backend-fake-create
                    :chats chats :histories (make-hash-table :test #'equal))))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
+      (with-current-buffer buffer (etaf-telega-back))
       (let ((text (etaf-telega-test--text buffer)))
         (should (string-match-p "对话 001" text))
         (should-not (string-match-p "对话 060" text)))
@@ -256,7 +258,34 @@
       (let ((text (etaf-telega-test--text buffer)))
         (should (string-match-p "对话 031" text))
         (should-not (string-match-p "对话 001" text))
-        (should-not (string-match-p "对话 060" text))))))
+        (should-not (string-match-p "对话 060" text)))
+      (with-current-buffer buffer (call-interactively #'etaf-telega-return))
+      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat)))))
+
+(ert-deftest etaf-telega-tests-filter-tabs-switch-the-list ()
+  "Filter tabs narrow the chat list inside the one client buffer."
+  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private)
+                      (list :id 2 :title "工作群" :unread 0 :kind 'group)
+                      (list :id 3 :title "新闻频道" :unread 5 :kind 'channel)
+                      (list :id 4 :title "旧群" :unread 0 :kind 'group :archived t)))
+         (backend (etaf-telega-backend-fake-create
+                   :chats chats :histories (make-hash-table :test #'equal))))
+    (etaf-telega-test--with-client buffer backend
+      (with-current-buffer buffer (etaf-telega-select-filter 'groups))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "工作群" text))
+        (should-not (string-match-p "Alice" text))
+        (should-not (string-match-p "新闻频道" text)))
+      (should (equal (plist-get (etaf-telega-info buffer) :filter) 'groups))
+      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'root))
+      (with-current-buffer buffer (etaf-telega-select-filter 'channels))
+      (should (string-match-p "新闻频道" (etaf-telega-test--text buffer)))
+      (with-current-buffer buffer (etaf-telega-select-filter 'archived))
+      (should (string-match-p "旧群" (etaf-telega-test--text buffer)))
+      (with-current-buffer buffer (etaf-telega-select-filter 'main))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "Alice" text))
+        (should-not (string-match-p "旧群" text))))))
 
 (ert-deftest etaf-telega-tests-viewport-scrolls-and-pages-the-history ()
   "The pane shows the newest rows, follows, scrolls and pages at the top."

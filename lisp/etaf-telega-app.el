@@ -67,15 +67,48 @@ Tests bind this to a fake backend factory so no network is touched.")
                       2))
             2)))
 
+(defconst etaf-telega-filters
+  '((main . "全部") (groups . "群组") (channels . "频道") (archived . "归档"))
+  "Chat filters shown in the top tab strip.")
+
+(defun etaf-telega--filter-chats (chats key)
+  "Return CHATS matching filter KEY."
+  (pcase key
+    ('main (cl-remove-if (lambda (chat) (plist-get chat :archived)) chats))
+    ('groups (cl-remove-if-not (lambda (chat)
+                                 (eq (plist-get chat :kind) 'group)) chats))
+    ('channels (cl-remove-if-not (lambda (chat)
+                                   (eq (plist-get chat :kind) 'channel)) chats))
+    ('archived (cl-remove-if-not (lambda (chat)
+                                   (plist-get chat :archived)) chats))
+    (_ chats)))
+
+(defun etaf-telega--filter-items (chats)
+  "Return the filter tab items over CHATS, with unread chat counts."
+  (mapcar (lambda (entry)
+            (let* ((matching (etaf-telega--filter-chats chats (car entry)))
+                   (unread (length (cl-remove-if-not
+                                    (lambda (chat)
+                                      (> (or (plist-get chat :unread) 0) 0))
+                                    matching))))
+              (list :key (car entry)
+                    :label (if (> unread 0)
+                               (format "%s %d" (cdr entry) unread)
+                             (cdr entry)))))
+          etaf-telega-filters))
+
 (defun etaf-telega--chat-layout ()
   "Return the sidebar's visible chat slice.
 The slice follows the selected conversation, so walking the list never
 leaves the selection off screen."
   (let* ((model etaf-telega--model)
-         (chats (if model (etaf-telega-model-chats model) nil))
+         (chats (if model
+                    (etaf-telega--filter-chats (etaf-telega-model-chats model)
+                                               (etaf-telega-model-filter model))
+                  nil))
          (total (length chats))
          (visible (etaf-telega--chat-rows))
-         (selected (and model (plist-get (etaf-telega-model-chat model) :id)))
+         (selected (and model (etaf-telega-model-cursor model)))
          (index (cl-position selected chats
                              :key (lambda (chat) (plist-get chat :id))
                              :test #'equal))
@@ -140,6 +173,21 @@ Inside a paint batch the request waits for the batch to finish."
       (setq etaf-telega--paint-dirty t)
     (etaf-telega--paint-now)))
 
+(defun etaf-telega--view ()
+  "Return the current projection of the model."
+  (let ((layout (etaf-telega--layout))
+        (chat-layout (etaf-telega--chat-layout))
+        (chats (and etaf-telega--model (etaf-telega-model-chats etaf-telega--model))))
+    (etaf-telega-view etaf-telega--model
+                      (plist-get layout :width)
+                      (plist-get layout :visible)
+                      (plist-get chat-layout :chats)
+                      (etaf-telega--filter-items chats)
+                      (etaf-telega-model-filter etaf-telega--model)
+                      (etaf-telega-model-screen etaf-telega--model)
+                      #'etaf-telega-select-filter
+                      #'etaf-telega-back)))
+
 (defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
 A native editing session owns the buffer text, so its paint waits until the
@@ -150,15 +198,9 @@ session ends."
         (if (etaf-text-input-active-p runtime)
             (setq etaf-telega--paint-pending t)
           (setq etaf-telega--paint-pending nil)
-          (let ((layout (etaf-telega--layout))
-                (chat-layout (etaf-telega--chat-layout)))
-            (etaf-mount (current-buffer)
-                        (etaf-telega-view etaf-telega--model
-                                          (plist-get layout :width)
-                                          (plist-get layout :visible)
-                                          (plist-get chat-layout :chats))
-                        (list :viewport-width (window-body-width (etaf-telega--window) t)
-                              :viewport-height (window-body-height (etaf-telega--window)))))
+          (etaf-mount (current-buffer) (etaf-telega--view)
+                      (list :viewport-width (window-body-width (etaf-telega--window) t)
+                            :viewport-height (window-body-height (etaf-telega--window))))
           (setq-local cursor-type nil))))))
 
 (defun etaf-telega--callbacks (buffer)
@@ -230,6 +272,8 @@ session ends."
     (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
           (id (plist-get chat :id)))
       (etaf-telega-model-select model chat)
+      (etaf-telega-model-set-cursor model (plist-get chat :id))
+      (etaf-telega-model-set-screen model 'chat)
       (setq etaf-telega--older-pending nil)
       (etaf-telega--paint)
       (etaf-telega-backend-select etaf-telega--backend id))))
@@ -240,6 +284,7 @@ session ends."
   (let ((chat (and etaf-telega--model (etaf-telega-model-chat-by-id
                                        etaf-telega--model id))))
     (unless chat (user-error "没有这个对话：%s" id))
+    (etaf-telega-model-set-cursor etaf-telega--model id)
     (etaf-telega-open-chat chat)))
 
 (defun etaf-telega-info (&optional buffer)
@@ -255,6 +300,9 @@ session ends."
             :messages (length (and model (etaf-telega-model-messages model)))
             :selected (and model (etaf-telega-model-selected-id model))
             :scroll (and model (etaf-telega-model-scroll model))
+            :screen (and model (etaf-telega-model-screen model))
+            :filter (and model (etaf-telega-model-filter model))
+            :cursor (and model (etaf-telega-model-cursor model))
             :compose (plist-get compose :kind)
             :draft (and model (etaf-telega-model-draft model))
             :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
@@ -265,17 +313,35 @@ session ends."
     (etaf-text-input-begin runtime 'telega-composer)))
 
 (defun etaf-telega--move-chat (delta)
-  "Move the chat selection by DELTA entries."
+  "Move the chat-list cursor by DELTA entries."
   (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (chats (etaf-telega-model-chats model))
-         (current (etaf-telega-model-chat model))
-         (index (cl-position current chats :test (lambda (a b)
-                                                   (equal (plist-get a :id)
-                                                          (plist-get b :id)))))
+         (chats (etaf-telega--filter-chats (etaf-telega-model-chats model)
+                                           (etaf-telega-model-filter model)))
+         (cursor (etaf-telega-model-cursor model))
+         (index (cl-position cursor chats
+                             :key (lambda (chat) (plist-get chat :id))
+                             :test #'equal))
          (next (nth (max 0 (min (1- (length chats))
                                 (+ (or index -1) delta)))
                     chats)))
-    (when next (etaf-telega-open-chat next))))
+    (when next
+      (etaf-telega-model-set-cursor model (plist-get next :id))
+      (etaf-telega--paint))))
+
+(defun etaf-telega-open-selected-chat ()
+  "Open the conversation selected in the chat list."
+  (interactive)
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (cursor (etaf-telega-model-cursor model))
+         (chat (and cursor (etaf-telega-model-chat-by-id model cursor))))
+    (when chat (etaf-telega-open-chat chat))))
+
+(defun etaf-telega-return ()
+  "Open the selected conversation, or reload the open one."
+  (interactive)
+  (if (eq (etaf-telega-model-screen etaf-telega--model) 'root)
+      (etaf-telega-open-selected-chat)
+    (etaf-telega-reload-chat)))
 
 (defun etaf-telega-next-chat ()
   "Select the next chat in the list."
@@ -485,6 +551,29 @@ available as the next draft."
         (etaf-telega-model-set-compose etaf-telega--model nil))))
   (when etaf-telega--paint-pending (etaf-telega--paint)))
 
+(defun etaf-telega-select-filter (key)
+  "Show the conversations of filter KEY and return to the list."
+  (interactive)
+  (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
+    (etaf-telega-model-set-filter model key)
+    (etaf-telega-model-set-screen model 'root)
+    (etaf-telega-model-set-chat-scroll model 0)
+    (etaf-telega--paint)))
+
+(defun etaf-telega-back ()
+  "Leave the conversation screen and show the chat list."
+  (interactive)
+  (when etaf-telega--model
+    (etaf-telega-model-set-screen etaf-telega--model 'root)
+    (etaf-telega--paint)))
+
+(defun etaf-telega-quit ()
+  "Leave the conversation screen, or close the client from the list."
+  (interactive)
+  (if (eq (etaf-telega-model-screen etaf-telega--model) 'chat)
+      (etaf-telega-back)
+    (etaf-telega-close)))
+
 (defvar etaf-telega-mode-map
   (let ((map (make-sparse-keymap)))
     (dolist (pair '(("j" . etaf-telega-next-chat) ("k" . etaf-telega-previous-chat)
@@ -496,9 +585,9 @@ available as the next draft."
                     ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
                     ("d" . etaf-telega-delete) ("c" . etaf-telega-copy)
                     ("i" . etaf-telega-compose)
-                    ("RET" . etaf-telega-reload-chat)
+                    ("RET" . etaf-telega-return)
                     ("g" . etaf-telega-reload-chat)
-                    ("q" . etaf-telega-close)))
+                    ("q" . etaf-telega-quit)))
       (define-key map (kbd (car pair)) (cdr pair)))
     map)
   "Keys the client owns outside the composer.")
@@ -520,15 +609,9 @@ available as the next draft."
     ;; The client owns the current window; never let display-buffer split it.
     (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
-      (let ((layout (etaf-telega--layout))
-            (chat-layout (etaf-telega--chat-layout)))
-        (etaf-mount buffer
-                    (etaf-telega-view etaf-telega--model
-                                      (plist-get layout :width)
-                                      (plist-get layout :visible)
-                                      (plist-get chat-layout :chats))
-                    (list :viewport-width (window-body-width (etaf-telega--window) t)
-                          :viewport-height (window-body-height (etaf-telega--window)))))
+      (etaf-mount buffer (etaf-telega--view)
+                  (list :viewport-width (window-body-width (etaf-telega--window) t)
+                        :viewport-height (window-body-height (etaf-telega--window))))
       (setq-local cursor-type nil)
       (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t)
       (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks buffer))
