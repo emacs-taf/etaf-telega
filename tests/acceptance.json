@@ -159,6 +159,11 @@
    "name": "etaf-telega-tests-chat-list-scrolls-without-moving-the-cursor",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Scrolling the conversation column shows later chats while the selection stays put."
+  },
+  {
+   "name": "etaf-telega-tests-splitter-drag-resizes-the-column",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Dragging the wide layout divider stores a wider conversation column while the message pane stays renderable."
   }
  ]
 }

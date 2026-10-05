@@ -29,6 +29,7 @@
         :compose (etaf-ref nil :name 'etaf-telega-compose)
         :scroll (etaf-ref 0 :name 'etaf-telega-scroll)
         :chat-scroll (etaf-ref 0 :name 'etaf-telega-chat-scroll)
+        :list-width (etaf-ref nil :name 'etaf-telega-list-width)
         :cursor (etaf-ref nil :name 'etaf-telega-cursor)
         :screen (etaf-ref 'root :name 'etaf-telega-screen)
         :describe (etaf-ref nil :name 'etaf-telega-describe)
@@ -78,6 +79,15 @@
 (defun etaf-telega-model-chat-scroll (model)
   "Return MODEL's chat list offset, the first visible chat index."
   (or (etaf-value (plist-get model :chat-scroll)) 0))
+
+(defun etaf-telega-model-list-width (model)
+  "Return MODEL's conversation-column width in cells, or nil for the default."
+  (etaf-value (plist-get model :list-width)))
+
+(defun etaf-telega-model-set-list-width (model width)
+  "Set MODEL's conversation-column width to WIDTH cells, or nil for the default."
+  (setf (etaf-value (plist-get model :list-width))
+        (and width (max 1 (round width)))))
 
 (defun etaf-telega-model-set-chat-scroll (model offset)
   "Set MODEL's chat list OFFSET, the first visible chat index."

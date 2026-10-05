@@ -521,8 +521,8 @@ conversation; the narrow layout already owns the shell title bar."
                "j/k 选择会话，RET 打开"))))))
 
 (etaf-define-component etaf-telega-shell
-    (&key model width list-width split message-slice chat-slice filter-items
-          selected-slice on-filter on-back on-action)
+    (&key model width list-width list-ratio split message-slice chat-slice
+          filter-items selected-slice on-filter on-back on-action on-resize-list)
   "Render the client shell for MODEL.
 MESSAGE-SLICE, CHAT-SLICE, FILTER-ITEMS and SELECTED-SLICE are thunks the
 nested panes call inside their own render, so a message or chat change
@@ -554,38 +554,46 @@ model's active screen, read here so opening a screen rebinds the layout."
       (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
       (text :color (etaf-telega-color :muted)
             (expr (etaf-value (plist-get model :status)))))
-    ;; Wide layout: conversation column beside the active screen.
+    ;; Wide layout: the conversation column beside the active screen, split
+    ;; by a draggable divider whose ratio the application owns.
     (flex :if split :flex-direction 'row :flex-grow 1 :flex-basis '(lh 0)
           :min-height '(lh 1) :width 'stretch :overflow 'hidden
-      (flex :flex-direction 'column :width (list 'ch list-width)
-            :flex-grow 0 :flex-basis (list 'ch list-width)
-            :min-width (list 'ch list-width)
-            :height 'stretch :overflow 'hidden
-            :background-color (etaf-telega-color :surface)
-            :border-right (list '(px 1) 'solid (etaf-telega-color :hairline))
-        (etaf-telega-filter-bar :model model :filter-items filter-items
-                                :on-filter on-filter)
-        (etaf-telega-chat-list :model model :chat-slice chat-slice
-                               :rows-width (- list-width 2)))
-      (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0)
-            :min-width '(ch 0) :overflow 'hidden
-        (flex :if (eq screen 'chat) :flex-direction 'column :flex-grow 1
-              :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-          (etaf-telega-chat-pane :model model :message-slice message-slice
-                                 :width width :header t))
-        (flex :if (eq screen 'describe) :flex-direction 'column :flex-grow 1
-              :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-          (etaf-telega-describe-screen
-           :describe (or (etaf-value (plist-get model :describe)) (list))
-           :on-action on-action :on-back on-back))
-        (flex :if (eq screen 'actions) :flex-direction 'column :flex-grow 1
-              :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-          (etaf-telega-actions-screen
-           :message-slice selected-slice
-           :on-action on-action :on-back on-back))
-        (flex :if (eq screen 'root) :flex-direction 'column :flex-grow 1
-              :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-          (etaf-telega-welcome-pane :model model))))
+      (expr
+       (list
+        (etaf-view
+         (etaf-splitter
+          :orientation 'horizontal :ratio list-ratio
+          :min-ratio 0.15 :max-ratio 0.6
+          :on-change on-resize-list
+          (slot :name 'first
+            (flex :flex-direction 'column :width 'stretch :height 'stretch
+                  :overflow 'hidden
+                  :background-color (etaf-telega-color :surface)
+                  :border-right (list '(px 1) 'solid (etaf-telega-color :hairline))
+              (etaf-telega-filter-bar :model model :filter-items filter-items
+                                      :on-filter on-filter)
+              (etaf-telega-chat-list :model model :chat-slice chat-slice
+                                     :rows-width (- list-width 2))))
+          (slot :name 'second
+            (flex :flex-direction 'column :width 'stretch :height 'stretch
+                  :overflow 'hidden
+              (flex :if (eq screen 'chat) :flex-direction 'column :flex-grow 1
+                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
+                (etaf-telega-chat-pane :model model :message-slice message-slice
+                                       :width width :header t))
+              (flex :if (eq screen 'describe) :flex-direction 'column :flex-grow 1
+                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
+                (etaf-telega-describe-screen
+                 :describe (or (etaf-value (plist-get model :describe)) (list))
+                 :on-action on-action :on-back on-back))
+              (flex :if (eq screen 'actions) :flex-direction 'column :flex-grow 1
+                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
+                (etaf-telega-actions-screen
+                 :message-slice selected-slice
+                 :on-action on-action :on-back on-back))
+              (flex :if (eq screen 'root) :flex-direction 'column :flex-grow 1
+                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
+                (etaf-telega-welcome-pane :model model)))))))))
     ;; Narrow layout: one screen owns the window.
     (flex :if (and (not split) (eq screen 'root)) :flex-direction 'column
           :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 1)
@@ -612,22 +620,26 @@ model's active screen, read here so opening a screen rebinds the layout."
       (etaf-telega-chat-pane :model model :message-slice message-slice
                              :width width :header nil))))))
 
-(defun etaf-telega-view (model width list-width split message-slice chat-slice
+(defun etaf-telega-view (model width list-width list-ratio split
+                              message-slice chat-slice
                               filter-items selected-slice
-                              on-filter on-back on-action)
+                              on-filter on-back on-action on-resize-list)
   "Return the application View for MODEL.
-WIDTH is the message cell count, LIST-WIDTH the conversation-list cell
-count and SPLIT the wide layout flag.  MESSAGE-SLICE, CHAT-SLICE,
-FILTER-ITEMS and SELECTED-SLICE are thunks evaluated inside the panes they
-feed, so a model change re-renders only that pane."
+WIDTH is the message cell count, LIST-WIDTH the conversation-list cell count
+and LIST-RATIO its fraction of the split shell; SPLIT selects the wide
+layout.  MESSAGE-SLICE, CHAT-SLICE, FILTER-ITEMS and SELECTED-SLICE are
+thunks evaluated inside the panes they feed, so a model change re-renders
+only that pane.  ON-RESIZE-LIST receives divider drag gestures."
   (etaf-view (etaf-telega-shell :model model :width width
-                                :list-width list-width :split split
+                                :list-width list-width :list-ratio list-ratio
+                                :split split
                                 :message-slice message-slice
                                 :chat-slice chat-slice
                                 :filter-items filter-items
                                 :selected-slice selected-slice
                                 :on-filter on-filter :on-back on-back
-                                :on-action on-action)))
+                                :on-action on-action
+                                :on-resize-list on-resize-list)))
 
 (provide 'etaf-telega-views)
 ;;; etaf-telega-views.el ends here

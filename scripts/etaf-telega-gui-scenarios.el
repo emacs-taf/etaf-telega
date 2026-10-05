@@ -306,6 +306,24 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                        (equal (plist-get info :draft) ""))))
               t)
              (etaf-telega-gui--action
+              "resize-sidebar"
+              (lambda (_)
+                (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+                       (divider
+                        (cl-find-if
+                         (lambda (entry)
+                           (equal (plist-get (cdr entry) :aria-label)
+                                  "Resize columns"))
+                         (etaf-runtime-host-props-entries runtime))))
+                  (unless divider (error "No splitter divider"))
+                  (etaf-dispatch-event runtime (car divider) 'drag
+                                       (list :phase 'move :delta (cons -72 0))
+                                       t)))
+              (lambda (_)
+                (let ((width (plist-get (etaf-telega-gui--info) :list-width)))
+                  (and (integerp width) (< width 50))))
+              t)
+             (etaf-telega-gui--action
               "next-chat" (lambda (_)
                             (execute-kbd-macro (kbd "q"))
                             (execute-kbd-macro (kbd "j")))

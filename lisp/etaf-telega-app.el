@@ -60,11 +60,42 @@ Tests bind this to a fake backend factory so no network is touched.")
            etaf-telega-split-threshold)))
 
 (defun etaf-telega--list-columns ()
-  "Return the conversation column width of the wide layout."
-  (max 40 (min 52 (floor (* (or (and (etaf-telega--window)
-                                     (window-body-width (etaf-telega--window)))
-                                80)
-                          0.38)))))
+  "Return the conversation column width of the wide layout.
+A width stored by a divider drag wins over the proportional default; both are
+clamped so the message pane keeps a usable minimum."
+  (let* ((body (or (and (etaf-telega--window)
+                        (window-body-width (etaf-telega--window)))
+                   80))
+         (stored (and etaf-telega--model
+                      (etaf-telega-model-list-width etaf-telega--model))))
+    (if stored
+        (max 24 (min stored (max 24 (- body 40))))
+      (max 40 (min 52 (floor (* body 0.38)))))))
+
+(defun etaf-telega--list-ratio ()
+  "Return the conversation column's fraction of the window body."
+  (let* ((body (max 1 (or (and (etaf-telega--window)
+                               (window-body-width (etaf-telega--window)))
+                          80)))
+         (ratio (/ (float (etaf-telega--list-columns)) body)))
+    (max 0.1 (min 0.9 ratio))))
+
+(defun etaf-telega--resize-list (gesture)
+  "Apply splitter drag GESTURE to the conversation column width.
+The divider reports pixel deltas; the resulting cell width is stored in the
+model so both the sidebar and the message pane reproject with one paint."
+  (when (eq (plist-get gesture :phase) 'move)
+    (let* ((model (or etaf-telega--model
+                      (user-error "当前不是 Telegram 客户端")))
+           (window (etaf-telega--window))
+           (delta (or (car-safe (plist-get gesture :delta)) 0))
+           (char (max 1 (if window (frame-char-width (window-frame window)) 8)))
+           (current (etaf-telega--list-columns))
+           (body (max 1 (or (and window (window-body-width window)) 80)))
+           (width (min (max 24 (+ current (round (/ (float delta) char))))
+                       (max 24 (- body 40)))))
+      (etaf-telega-model-set-list-width model width)
+      (etaf-telega--paint))))
 
 (defun etaf-telega--width ()
   "Return the message cell width for the current window.
@@ -256,6 +287,7 @@ each pane and a change re-renders only that pane."
     (etaf-telega-view etaf-telega--model
                       (etaf-telega--width)
                       (etaf-telega--list-width)
+                      (etaf-telega--list-ratio)
                       (etaf-telega--split-p)
                       (lambda ()
                         (with-current-buffer buffer
@@ -273,7 +305,8 @@ each pane and a change re-renders only that pane."
                               (list))))
                       #'etaf-telega-select-filter
                       #'etaf-telega-back
-                      #'etaf-telega--run-action)))
+                      #'etaf-telega--run-action
+                      #'etaf-telega--resize-list)))
 
 (defvar-local etaf-telega--remount-pending nil
   "Non-nil when a rebuild was deferred by a native editing session.")
@@ -579,6 +612,7 @@ instead, and a dead buffer ends the report."
             :compose (plist-get compose :kind)
             :draft (and model (etaf-telega-model-draft model))
             :split (etaf-telega--split-p)
+            :list-width (and (etaf-telega--split-p) (etaf-telega--list-columns))
             :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
 
 (defun etaf-telega--compose-focus ()

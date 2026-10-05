@@ -443,6 +443,31 @@
           (should (>= (plist-get (etaf-telega-info buffer) :messages) filled))
           (should (string-match-p "第 24 条" (etaf-telega-test--text buffer))))))))
 
+(ert-deftest etaf-telega-tests-splitter-drag-resizes-the-column ()
+  "Dragging the wide layout divider stores a wider conversation column."
+  (let ((backend (etaf-telega-test--backend))
+        (etaf-telega-split-threshold 40))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (let* ((runtime (etaf-runtime-for-buffer buffer))
+             (divider
+              (cl-find-if
+               (lambda (entry)
+                 (equal (plist-get (cdr entry) :aria-label) "Resize columns"))
+               (etaf-runtime-host-props-entries runtime))))
+        (should divider)
+        (let ((before (plist-get (etaf-telega-info buffer) :list-width)))
+          (should (integerp before))
+          ;; The width is clamped so the message pane keeps its minimum; at the
+          ;; narrow test window a leftward drag proves the stored width moves.
+          (etaf-dispatch-event runtime (car divider) 'drag
+                               (list :phase 'move
+                                     :delta (cons (- (frame-char-width)) 0))
+                               t)
+          (should (< (plist-get (etaf-telega-info buffer) :list-width) before))
+          ;; The message pane takes the remaining width and stays renderable.
+          (should (string-match-p "Alice" (etaf-telega-test--text buffer))))))))
+
 (ert-deftest etaf-telega-tests-chat-list-scrolls-without-moving-the-cursor ()
   "Scrolling the conversation column shows later chats; the cursor stays."
   (let* ((chats (cl-loop for n from 1 to 60

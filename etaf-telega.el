@@ -24,6 +24,12 @@
 ;; list; implementations and precise docstrings remain beside their
 ;; definitions.
 ;;
+;; Variable: etaf-telega-split-threshold
+;; Window body width in columns at which the client splits into the
+;; conversation column and the message pane.  Below it one screen owns the
+;; window.  The divider between the panes is draggable; a dragged width is
+;; remembered per session and clamped so the message pane stays usable.
+;;
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
 ;; Mount the client in its own buffer and return that buffer.  Starting uses
