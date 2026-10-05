@@ -240,6 +240,24 @@
     (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
     (should (equal (current-kill 0) "在的"))))
 
+(ert-deftest etaf-telega-tests-sidebar-viewport-follows-the-chat-selection ()
+  "A long chat list renders only the rows around the selection."
+  (let* ((chats (cl-loop for n from 1 to 60
+                         collect (list :id n :title (format "对话 %03d" n) :unread 0)))
+         (backend (etaf-telega-backend-fake-create
+                   :chats chats :histories (make-hash-table :test #'equal))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "对话 001" text))
+        (should-not (string-match-p "对话 060" text)))
+      (dotimes (_ 30)
+        (with-current-buffer buffer (call-interactively #'etaf-telega-next-chat)))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "对话 031" text))
+        (should-not (string-match-p "对话 001" text))
+        (should-not (string-match-p "对话 060" text))))))
+
 (ert-deftest etaf-telega-tests-viewport-scrolls-and-pages-the-history ()
   "The pane shows the newest rows, follows, scrolls and pages at the top."
   (let* ((histories (make-hash-table :test #'equal))

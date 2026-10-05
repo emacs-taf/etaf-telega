@@ -59,6 +59,36 @@ Tests bind this to a fake backend factory so no network is touched.")
   "Return the mounted runtime of the current buffer, if any."
   (etaf-runtime-for-buffer (current-buffer)))
 
+(defun etaf-telega--chat-rows ()
+  "Return the sidebar's visible chat row count."
+  (max 1 (/ (max 2 (- (or (and (etaf-telega--window)
+                               (window-body-height (etaf-telega--window)))
+                         24)
+                      2))
+            2)))
+
+(defun etaf-telega--chat-layout ()
+  "Return the sidebar's visible chat slice.
+The slice follows the selected conversation, so walking the list never
+leaves the selection off screen."
+  (let* ((model etaf-telega--model)
+         (chats (if model (etaf-telega-model-chats model) nil))
+         (total (length chats))
+         (visible (etaf-telega--chat-rows))
+         (selected (and model (plist-get (etaf-telega-model-chat model) :id)))
+         (index (cl-position selected chats
+                             :key (lambda (chat) (plist-get chat :id))
+                             :test #'equal))
+         (start (min (max 0 (if model (etaf-telega-model-chat-scroll model) 0))
+                     (max 0 (- total visible)))))
+    (when index
+      (cond ((< index start) (setq start index))
+            ((>= index (+ start visible)) (setq start (1+ (- index visible))))))
+    (setq start (min (max 0 start) (max 0 (- total visible))))
+    (when model (etaf-telega-model-set-chat-scroll model start))
+    (list :total total :visible visible :start start :end (+ start visible)
+          :chats (cl-subseq chats start (min total (+ start visible))))))
+
 (defun etaf-telega--pane-rows ()
   "Return the message pane's visible row count."
   (max 3 (- (or (and (etaf-telega--window) (window-body-height (etaf-telega--window)))
@@ -85,7 +115,32 @@ offset; every value is clamped so the slice always fits the pane."
     (list :width width :pane pane :rows rows :total total :scroll scroll
           :start start :end end :visible (cl-subseq rows start end))))
 
+(defvar-local etaf-telega--paint-depth 0
+  "Depth of the current synchronous paint batch.")
+
+(defvar-local etaf-telega--paint-dirty nil
+  "Non-nil when a paint was requested inside a batch.")
+
+(defmacro etaf-telega--with-paint-batch (&rest body)
+  "Run BODY and paint the model at most once afterwards.
+Backend callbacks and model writes inside the batch coalesce into the one
+projection that shows their combined result."
+  (declare (indent 0) (debug t))
+  `(let ((etaf-telega--paint-depth (1+ etaf-telega--paint-depth)))
+     (prog1 (progn ,@body)
+       (setq etaf-telega--paint-depth (1- etaf-telega--paint-depth))
+       (when (and (zerop etaf-telega--paint-depth) etaf-telega--paint-dirty)
+         (setq etaf-telega--paint-dirty nil)
+         (etaf-telega--paint-now)))))
+
 (defun etaf-telega--paint ()
+  "Request a projection of the model into the mounted runtime.
+Inside a paint batch the request waits for the batch to finish."
+  (if (> etaf-telega--paint-depth 0)
+      (setq etaf-telega--paint-dirty t)
+    (etaf-telega--paint-now)))
+
+(defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
 A native editing session owns the buffer text, so its paint waits until the
 session ends."
@@ -95,11 +150,13 @@ session ends."
         (if (etaf-text-input-active-p runtime)
             (setq etaf-telega--paint-pending t)
           (setq etaf-telega--paint-pending nil)
-          (let ((layout (etaf-telega--layout)))
+          (let ((layout (etaf-telega--layout))
+                (chat-layout (etaf-telega--chat-layout)))
             (etaf-mount (current-buffer)
                         (etaf-telega-view etaf-telega--model
                                           (plist-get layout :width)
-                                          (plist-get layout :visible))
+                                          (plist-get layout :visible)
+                                          (plist-get chat-layout :chats))
                         (list :viewport-width (window-body-width (etaf-telega--window) t)
                               :viewport-height (window-body-height (etaf-telega--window)))))
           (setq-local cursor-type nil))))))
@@ -169,12 +226,13 @@ session ends."
 (defun etaf-telega-open-chat (chat)
   "Select CHAT and load its recent history."
   (interactive)
-  (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-        (id (plist-get chat :id)))
-    (etaf-telega-model-select model chat)
-    (setq etaf-telega--older-pending nil)
-    (etaf-telega--paint)
-    (etaf-telega-backend-select etaf-telega--backend id)))
+  (etaf-telega--with-paint-batch
+    (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+          (id (plist-get chat :id)))
+      (etaf-telega-model-select model chat)
+      (setq etaf-telega--older-pending nil)
+      (etaf-telega--paint)
+      (etaf-telega-backend-select etaf-telega--backend id))))
 
 (defun etaf-telega-select-chat (id)
   "Select the chat with ID and load its history."
@@ -390,8 +448,9 @@ An edit restores the draft that was present before editing began."
   (interactive)
   (let ((message (etaf-telega-selected-message)))
     (when (yes-or-no-p "删除这条消息？")
-      (etaf-telega-backend-delete etaf-telega--backend message)
-      (when etaf-telega--paint-pending (etaf-telega--paint)))))
+      (etaf-telega--with-paint-batch
+        (etaf-telega-backend-delete etaf-telega--backend message)
+        (when etaf-telega--paint-pending (etaf-telega--paint))))))
 
 (defun etaf-telega-send (text)
   "Send TEXT to the selected chat, honouring the compose state.
@@ -401,15 +460,16 @@ available for retry."
   (interactive)
   (unless (etaf-telega-model-chat etaf-telega--model)
     (user-error "先选择一个对话"))
-  (unless (string-empty-p (string-trim text))
-    (let ((compose (etaf-telega-model-compose etaf-telega--model)))
-      (pcase (plist-get compose :kind)
-        ('reply (etaf-telega-backend-send etaf-telega--backend text
-                                          (plist-get compose :target)))
-        ('edit (etaf-telega-backend-edit etaf-telega--backend
-                                         (plist-get compose :target) text))
-        (_ (etaf-telega-backend-send etaf-telega--backend text)))))
-  (when etaf-telega--paint-pending (etaf-telega--paint)))
+  (etaf-telega--with-paint-batch
+    (unless (string-empty-p (string-trim text))
+      (let ((compose (etaf-telega-model-compose etaf-telega--model)))
+        (pcase (plist-get compose :kind)
+          ('reply (etaf-telega-backend-send etaf-telega--backend text
+                                            (plist-get compose :target)))
+          ('edit (etaf-telega-backend-edit etaf-telega--backend
+                                           (plist-get compose :target) text))
+          (_ (etaf-telega-backend-send etaf-telega--backend text)))))
+    (when etaf-telega--paint-pending (etaf-telega--paint))))
 
 (defun etaf-telega-keep-draft (text)
   "Handle leaving the composer with TEXT.
@@ -460,11 +520,13 @@ available as the next draft."
     ;; The client owns the current window; never let display-buffer split it.
     (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
-      (let ((layout (etaf-telega--layout)))
+      (let ((layout (etaf-telega--layout))
+            (chat-layout (etaf-telega--chat-layout)))
         (etaf-mount buffer
                     (etaf-telega-view etaf-telega--model
                                       (plist-get layout :width)
-                                      (plist-get layout :visible))
+                                      (plist-get layout :visible)
+                                      (plist-get chat-layout :chats))
                     (list :viewport-width (window-body-width (etaf-telega--window) t)
                           :viewport-height (window-body-height (etaf-telega--window)))))
       (setq-local cursor-type nil)

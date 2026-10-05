@@ -28,6 +28,7 @@
         :selected (etaf-ref nil :name 'etaf-telega-selected)
         :compose (etaf-ref nil :name 'etaf-telega-compose)
         :scroll (etaf-ref 0 :name 'etaf-telega-scroll)
+        :chat-scroll (etaf-ref 0 :name 'etaf-telega-chat-scroll)
         :draft (etaf-ref "" :name 'etaf-telega-draft)))
 
 (defun etaf-telega-model-status (model)
@@ -69,6 +70,14 @@
 (defun etaf-telega-model-set-scroll (model offset)
   "Set MODEL's viewport OFFSET, in display rows above the newest."
   (setf (etaf-value (plist-get model :scroll)) (max 0 (or offset 0))))
+
+(defun etaf-telega-model-chat-scroll (model)
+  "Return MODEL's chat list offset, the first visible chat index."
+  (or (etaf-value (plist-get model :chat-scroll)) 0))
+
+(defun etaf-telega-model-set-chat-scroll (model offset)
+  "Set MODEL's chat list OFFSET, the first visible chat index."
+  (setf (etaf-value (plist-get model :chat-scroll)) (max 0 (or offset 0))))
 
 (defun etaf-telega-model-message-by-id (model id)
   "Return MODEL's message with ID, or nil."

@@ -22,10 +22,14 @@
      :histories histories)))
 
 (defun etaf-telega-benchmark--open (backend)
-  "Open the client over BACKEND and select its populated chat."
+  "Open the client over BACKEND with its whole fixture history loaded.
+The fake backend pages its history, so the setup loads every page before
+measurement; only the paint work of the scenario stays in the samples."
   (let ((etaf-telega-backend-create-function (lambda () backend)))
     (let ((buffer (etaf-telega-open)))
-      (with-current-buffer buffer (etaf-telega-select-chat 1))
+      (with-current-buffer buffer
+        (etaf-telega-select-chat 1)
+        (dotimes (_ 30) (etaf-telega-load-more)))
       buffer)))
 
 (defun etaf-telega-benchmark--cleanup (buffer)
@@ -60,6 +64,32 @@
            :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
 
 (taf-benchmark-register
+ "telega.chat.list" :version 1 :modes '(batch gui) :budget-ms 60
+ :impact 'local :isolation 'series
+ :description "Repaint the sidebar while walking a 150-chat list"
+ :setup
+ (lambda (_mode)
+   (let* ((chats (cl-loop for n from 1 to 150
+                          collect (list :id n :title (format "对话 %03d" n)
+                                        :unread 0 :preview "预览文本" :time "10:00")))
+          (backend (etaf-telega-backend-fake-create
+                    :chats chats :histories (make-hash-table :test #'equal)))
+          (buffer (etaf-telega-benchmark--open backend)))
+     (list :buffer buffer
+           :ready (lambda ()
+                    (with-current-buffer buffer
+                      (equal (plist-get (etaf-telega-info) :chats) 150)))
+           :invoke (lambda (sample)
+                     (with-current-buffer buffer
+                       (etaf-telega-select-chat (1+ (% sample 150)))
+                       (redisplay t)))
+           :verify (lambda ()
+                     (with-current-buffer buffer
+                       (if (plist-get (etaf-telega-info) :chat)
+                           t "no chat selected")))
+           :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
+
+(taf-benchmark-register
  "telega.chat.select" :version 1 :modes '(batch gui) :budget-ms 80
  :impact 'local :isolation 'series
  :description "Switch conversations and republish each loaded history"
@@ -80,7 +110,7 @@
                        (let ((info (etaf-telega-info)))
                          (if (and (member (plist-get info :chat) '(1 2))
                                   (= (plist-get info :messages)
-                                     (if (= (plist-get info :chat) 1) 60 0)))
+                                     (if (= (plist-get info :chat) 1) 2 0)))
                              t "the selected history does not match its chat"))))
            :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
 

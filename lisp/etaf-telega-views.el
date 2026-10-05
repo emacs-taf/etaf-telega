@@ -178,8 +178,9 @@ of this list, so wrapping and grouping happen exactly once per paint."
                          'text (list :color (etaf-telega-color :ink))
                          (list (plist-get row :text)))))))))
 
-(etaf-define-component etaf-telega-shell (&key model rows width)
-  "Render the client shell for MODEL; ROWS is the visible message slice."
+(etaf-define-component etaf-telega-shell (&key model rows chats width)
+  "Render the client shell for MODEL.
+ROWS is the visible message slice and CHATS the visible chat slice."
   :setup (etaf-theme-provide (etaf-telega-theme-defaults))
   :view
   (flex :flex-direction 'row :width 'stretch :height 'stretch
@@ -193,14 +194,14 @@ of this list, so wrapping and grouping happen exactly once per paint."
         (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
         (text :color (etaf-telega-color :muted)
               (expr (or (plist-get (etaf-value (plist-get model :me)) :name) ""))))
-      (flex :flex-direction 'column
+      (flex :flex-direction 'column :overflow 'hidden
         (expr (mapcar (lambda (chat)
                         (etaf-view
                          (etaf-telega-chat-row
                           :key (plist-get chat :id) :chat chat
                           :selected (equal (plist-get chat :id)
                                            (plist-get (etaf-value (plist-get model :chat)) :id)))))
-                      (etaf-value (plist-get model :chats))))))
+                      chats))))
     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0)
           :min-width '(ch 0)
       (flex :flex-direction 'row :align-items 'center
@@ -238,10 +239,11 @@ of this list, so wrapping and grouping happen exactly once per paint."
          :on-submit #'etaf-telega-send
          :on-cancel #'etaf-telega-keep-draft)))))
 
-(defun etaf-telega-view (model width rows)
-  "Return the application View for MODEL, with WIDTH cells and visible ROWS.
-ROWS is the viewport slice produced by `etaf-telega-message-rows'."
-  (etaf-view (etaf-telega-shell :model model :rows rows :width width)))
+(defun etaf-telega-view (model width rows chats)
+  "Return the application View for MODEL.
+WIDTH is the message cell count, ROWS the visible message slice produced by
+`etaf-telega-message-rows' and CHATS the visible conversations."
+  (etaf-view (etaf-telega-shell :model model :rows rows :chats chats :width width)))
 
 (provide 'etaf-telega-views)
 ;;; etaf-telega-views.el ends here
