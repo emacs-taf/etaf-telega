@@ -94,7 +94,7 @@ The plist carries :id, :title, :username, :kind, :members, :description,
 ;;; Fake backend
 
 (cl-defstruct etaf-telega-backend-fake
-  chats histories sent responder callbacks chat-id replies)
+  chats histories sent responder callbacks chat-id replies next-sent-id)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -271,13 +271,23 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
     (funcall report (copy-tree message))))
 
 (defun etaf-telega-backend-fake-complete (backend text)
-  "Report TEXT as accepted by BACKEND, exactly like a server acknowledgement."
+  "Report TEXT as accepted by BACKEND, exactly like a server acknowledgement.
+The accepted message gets the next id after the stored history, so it sorts
+like a real sent message instead of colliding with existing ids."
   (let* ((reply-id (cdr (assoc text (etaf-telega-backend-fake-replies backend))))
-         (reply (and reply-id (etaf-telega-backend-fake-message backend reply-id))))
+         (reply (and reply-id (etaf-telega-backend-fake-message backend reply-id)))
+         (history (gethash (etaf-telega-backend-fake-chat-id backend)
+                           (etaf-telega-backend-fake-histories backend)))
+         (base (max (or (etaf-telega-backend-fake-next-sent-id backend) 0)
+                   (or (cl-loop for message in history
+                                maximize (or (plist-get message :id) 0))
+                       0)))
+         (id (1+ base)))
+    (setf (etaf-telega-backend-fake-next-sent-id backend) id)
     (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                    :sent)))
       (funcall report
-               (append (list :id (1+ (length (etaf-telega-backend-fake-sent backend)))
+               (append (list :id id
                              :outgoing t :sender "我"
                              :time (format-time-string "%H:%M")
                              :text text)
@@ -420,13 +430,32 @@ requested so every live backend sees the shared Telega state."
     (when (and error (plist-get callbacks :error))
       (funcall (plist-get callbacks :error) error))))
 
+(defun etaf-telega-backend-telega--guard (backend label function)
+  "Call FUNCTION for BACKEND, reporting failures as readable status text.
+These entry points run inside Telega's command dispatch and TDLib callbacks;
+an escaping error makes Telega print the whole failing command, including
+message bodies, to the echo area and can hang Emacs on a large payload.  The
+failure reaches the application as a clipped status line instead."
+  (condition-case err
+      (funcall function)
+    ((error quit)
+     (let ((text (error-message-string err)))
+       (etaf-telega-backend-telega--report
+        backend :error
+        (format "%s：%s" label
+                (if (> (length text) 120)
+                    (concat (substring text 0 120) "…")
+                  text)))))))
+
 (defun etaf-telega-backend-telega--ready ()
   "Report readiness to every live telega backend."
   (when etaf-telega-backend-telega--chats-timer
     (cancel-timer etaf-telega-backend-telega--chats-timer)
     (setq etaf-telega-backend-telega--chats-timer nil))
   (dolist (backend etaf-telega-backend-telega-instances)
-    (etaf-telega-backend-telega--report backend :status "就绪" :chats t)))
+    (etaf-telega-backend-telega--guard
+     backend "连接就绪"
+     (lambda () (etaf-telega-backend-telega--report backend :status "就绪" :chats t)))))
 
 (defvar etaf-telega-backend-telega--chats-timer nil
   "Pending chat-list refresh; a TDLib sync storm becomes one report.")
@@ -458,25 +487,28 @@ every other message reaches the application through `:message'."
   (let ((chat-id (plist-get message :chat_id)))
     (dolist (backend etaf-telega-backend-telega-instances)
       (when (equal (etaf-telega-backend-telega-chat-id backend) chat-id)
-        (let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
-               (projected (etaf-telega-backend-telega--project-message message))
-               (pending (etaf-telega-backend-telega-pending backend))
-               (text (plist-get projected :text))
-               (record (cl-find text pending
-                                :key (lambda (item) (plist-get item :text))
-                                :test #'equal))
-               (ack (and (plist-get projected :outgoing) record)))
-          (if ack
-              (progn
-                (setf (etaf-telega-backend-telega-pending backend)
-                      (delq record pending))
-                (when-let* ((report (plist-get callbacks :sent)))
-                  (funcall report
-                           (append projected
-                                   (when (plist-get record :reply)
-                                     (list :reply (plist-get record :reply)))))))
-            (when-let* ((report (plist-get callbacks :message)))
-              (funcall report projected))))))))
+        (etaf-telega-backend-telega--guard
+         backend "接收消息"
+         (lambda ()
+           (let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
+                  (projected (etaf-telega-backend-telega--project-message message))
+                  (pending (etaf-telega-backend-telega-pending backend))
+                  (text (plist-get projected :text))
+                  (record (cl-find text pending
+                                   :key (lambda (item) (plist-get item :text))
+                                   :test #'equal))
+                  (ack (and (plist-get projected :outgoing) record)))
+             (if ack
+                 (progn
+                   (setf (etaf-telega-backend-telega-pending backend)
+                         (delq record pending))
+                   (when-let* ((report (plist-get callbacks :sent)))
+                     (funcall report
+                              (append projected
+                                      (when (plist-get record :reply)
+                                        (list :reply (plist-get record :reply)))))))
+               (when-let* ((report (plist-get callbacks :message)))
+                 (funcall report projected))))))))))
 
 (defun etaf-telega-backend-telega--send-failed (event)
   "Report a failed message send to every backend viewing its chat.
@@ -487,8 +519,11 @@ draft normally; the failure only reaches the status line."
          (detail (or (plist-get (plist-get event :error) :message) "未知原因")))
     (dolist (backend etaf-telega-backend-telega-instances)
       (when (equal (etaf-telega-backend-telega-chat-id backend) chat-id)
-        (etaf-telega-backend-telega--report
-         backend :error (format "发送失败：%s" detail))))))
+        (etaf-telega-backend-telega--guard
+         backend "发送失败"
+         (lambda ()
+           (etaf-telega-backend-telega--report
+            backend :error (format "发送失败：%s" detail))))))))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)
@@ -522,17 +557,20 @@ account and its database."
           (telega--getChatHistory
            chat 0 0 50 nil
            (lambda (event)
-             (let ((messages (append (plist-get event :messages) nil)))
-               (when-let* ((report (plist-get callbacks :messages)))
-                 (funcall report
-                          (mapcar #'etaf-telega-backend-telega--project-message
-                                  messages)))
-               ;; Opening a conversation reads its loaded page, exactly like
-               ;; Telega's own chat buffer.
-               (when messages
-                 (ignore-errors
-                   (telega--viewMessages
-                    chat messages :source '(:@type "messageSourceChatHistory"))))))))
+             (etaf-telega-backend-telega--guard
+              backend "加载会话历史"
+              (lambda ()
+                (let ((messages (append (plist-get event :messages) nil)))
+                  (when-let* ((report (plist-get callbacks :messages)))
+                    (funcall report
+                             (mapcar #'etaf-telega-backend-telega--project-message
+                                     messages)))
+                  ;; Opening a conversation reads its loaded page, exactly like
+                  ;; Telega's own chat buffer.
+                  (when messages
+                    (ignore-errors
+                      (telega--viewMessages
+                       chat messages :source '(:@type "messageSourceChatHistory"))))))))))
       (error (when-let* ((report (plist-get callbacks :error)))
                (funcall report (error-message-string err)))))))
 
@@ -547,10 +585,13 @@ account and its database."
           (telega--getChatHistory
            chat (or before 0) 0 (or limit 50) nil
            (lambda (event)
-             (when-let* ((report (plist-get callbacks :older)))
-               (funcall report
-                        (mapcar #'etaf-telega-backend-telega--project-message
-                                (append (plist-get event :messages) nil)))))))
+             (etaf-telega-backend-telega--guard
+              backend "加载更早历史"
+              (lambda ()
+                (when-let* ((report (plist-get callbacks :older)))
+                  (funcall report
+                           (mapcar #'etaf-telega-backend-telega--project-message
+                                   (append (plist-get event :messages) nil)))))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))))
 
@@ -662,13 +703,17 @@ failures are reported without keeping a half-send."
                       :text (list :@type "formattedText" :text text))
          :callback
          (lambda (result)
-           (cond
-            ((etaf-telega-backend-telega--error-p result)
-             (etaf-telega-backend-telega--report
-              backend :error (format "编辑失败：%s" (plist-get result :message))))
-            (t (when-let* ((report (plist-get callbacks :edited)))
-                 (funcall report
-                          (etaf-telega-backend-telega--project-message result)))))))
+           (etaf-telega-backend-telega--guard
+            backend "编辑消息"
+            (lambda ()
+              (cond
+               ((etaf-telega-backend-telega--error-p result)
+                (etaf-telega-backend-telega--report
+                 backend :error
+                 (format "编辑失败：%s" (plist-get result :message))))
+               (t (when-let* ((report (plist-get callbacks :edited)))
+                    (funcall report
+                             (etaf-telega-backend-telega--project-message result)))))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))
     text))

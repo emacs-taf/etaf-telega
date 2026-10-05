@@ -275,31 +275,70 @@ each pane and a change re-renders only that pane."
                       #'etaf-telega-back
                       #'etaf-telega--run-action)))
 
+(defvar-local etaf-telega--remount-pending nil
+  "Non-nil when a rebuild was deferred by a native editing session.")
+
+(defvar-local etaf-telega--surface-rebuild nil
+  "Non-nil when the next paint must rebuild the mounted runtime.
+A publication can fail when an edit landed outside the retained surface's
+owned cells; a fresh mount is the sanctioned recovery.  The flag is consumed
+once so a persistent failure cannot rebuild in a loop.")
+
+(defun etaf-telega--repaint-later (buffer)
+  "Request one repaint of BUFFER outside the current error path."
+  (run-at-time
+   0 nil
+   (lambda (live)
+     (when (buffer-live-p live)
+       (with-current-buffer live
+         (when (and etaf-telega--model (etaf-telega--window))
+           (etaf-telega--paint)))))
+   buffer))
+
 (defun etaf-telega--remount ()
   "Rebuild the mounted view in place.
 The runtime tracks model refs by itself, so a rebuild is only needed when
-non-reactive state changed (the palette, an explicit reload)."
+non-reactive state changed (the palette, an explicit reload, a resize).
+A native editing session owns the buffer text, so its rebuild waits until
+the session ends."
   (when (and etaf-telega--model (etaf-telega--window))
-    (setq etaf-telega--paint-pending nil)
-    (etaf-mount (current-buffer) (lambda () (etaf-telega--view))
-                (list :viewport-width (window-body-width (etaf-telega--window) t)
-                      :viewport-height (window-body-height (etaf-telega--window))))
-    (setq-local cursor-type nil)))
+    (let ((runtime (etaf-telega--runtime)))
+      (if (and runtime (etaf-text-input-active-p runtime))
+          (setq etaf-telega--remount-pending t)
+        (setq etaf-telega--paint-pending nil
+              etaf-telega--remount-pending nil
+              etaf-telega--surface-rebuild nil)
+        (etaf-mount (current-buffer) (lambda () (etaf-telega--view))
+                    (list :viewport-width (window-body-width (etaf-telega--window) t)
+                          :viewport-height (window-body-height (etaf-telega--window))))
+        (setq-local cursor-type nil)))))
 
 (defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
 A mounted runtime already subscribes every view expression to the model
 refs, so a paint drains its pending work instead of rebuilding the whole
 runtime; only the first paint mounts.  A native editing session owns the
-buffer text, so its paint waits until the session ends."
+buffer text, so its paint waits until the session ends; a rebuild deferred
+meanwhile lands before the next ordinary flush."
   (when (and etaf-telega--model (etaf-telega--window))
     (let ((runtime (etaf-telega--runtime)))
       (cond
        ((and runtime (etaf-text-input-active-p runtime))
         (setq etaf-telega--paint-pending t))
+       ((or etaf-telega--remount-pending etaf-telega--surface-rebuild)
+        (etaf-telega--remount))
        ((and runtime (etaf-runtime-mounted-p runtime))
         (setq etaf-telega--paint-pending nil)
-        (etaf-runtime-flush runtime))
+        (condition-case error
+            (etaf-runtime-flush runtime)
+          (error
+           ;; The retained surface refused an update (an edit outside its
+           ;; owned cells invalidates it).  Rebuild once on the next turn
+           ;; instead of failing every later publication.
+           (unless etaf-telega--surface-rebuild
+             (setq etaf-telega--surface-rebuild t)
+             (etaf-telega--repaint-later (current-buffer)))
+           (signal (car error) (cdr error)))))
        (t (etaf-telega--remount))))))
 
 (defvar-local etaf-telega--history-end nil
@@ -385,20 +424,52 @@ final frame instead of one frame per page."
       (setq etaf-telega--fill-active nil)
       (etaf-telega--paint)))))
 
+(defconst etaf-telega--status-limit 160
+  "Longest status or error text kept in the header.
+Backend or renderer failures can carry huge payloads (a Telega command with
+message bodies); the header keeps only a readable prefix.")
+
+(defun etaf-telega--clip-text (text)
+  "Return TEXT shortened to one readable status line."
+  (let ((text (or text "")))
+    (if (<= (length text) etaf-telega--status-limit)
+        text
+      (concat (substring text 0 etaf-telega--status-limit) "…"))))
+
+(defun etaf-telega--report-callback-failure (error)
+  "Report ERROR from a backend callback without letting it escape.
+These callbacks run inside Telega's command dispatch; an escaping failure
+makes Telega print the entire failing command, including message bodies, to
+the echo area and can hang Emacs.  The status line carries a clipped reason
+instead, and a dead buffer ends the report."
+  (condition-case nil
+      (etaf-telega-model-set-status
+       etaf-telega--model
+       (format "回调错误：%s" (etaf-telega--clip-text (error-message-string error))))
+    ;; The boundary itself must not raise: the buffer may be dead or the
+    ;; model already released while this callback drains.
+    (error nil)))
+
 (defun etaf-telega--callbacks (buffer)
   "Return backend callbacks that update BUFFER's model."
   (cl-labels ((report (update)
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
-                    (funcall update)
-                    (unless etaf-telega--fill-active
-                      (etaf-telega--paint)))))
+                    (condition-case error
+                        (progn
+                          (funcall update)
+                          (unless etaf-telega--fill-active
+                            (etaf-telega--paint)))
+                      ((error quit)
+                       (etaf-telega--report-callback-failure error))))))
               (clear-draft-for (text)
                 (when (equal (etaf-telega-model-draft etaf-telega--model) text)
                   (etaf-telega-model-set-draft etaf-telega--model ""))))
     (list :status (lambda (status)
                     (report (lambda ()
-                              (etaf-telega-model-set-status etaf-telega--model status))))
+                              (etaf-telega-model-set-status
+                               etaf-telega--model
+                               (etaf-telega--clip-text status)))))
           :me (lambda (me)
                 (report (lambda () (etaf-telega-model-set-me etaf-telega--model me))))
           :chats (lambda (chats)
@@ -458,8 +529,9 @@ final frame instead of one frame per page."
           :error (lambda (message)
                    (report (lambda ()
                              (setq etaf-telega--fill-active nil)
-                             (etaf-telega-model-set-status etaf-telega--model
-                                                           (format "错误：%s" message))))))))
+                             (etaf-telega-model-set-status
+                              etaf-telega--model
+                              (format "错误：%s" (etaf-telega--clip-text message)))))))))
 
 (defun etaf-telega-open-chat (chat)
   "Select CHAT and load its recent history."
@@ -794,7 +866,8 @@ An edit restores the draft that was present before editing began."
     (when (yes-or-no-p "删除这条消息？")
       (etaf-telega--with-paint-batch
         (etaf-telega-backend-delete etaf-telega--backend message)
-        (when etaf-telega--paint-pending (etaf-telega--paint))))))
+        (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
+          (etaf-telega--paint))))))
 
 (defun etaf-telega-send (text)
   "Send TEXT to the selected chat, honouring the compose state.
@@ -813,7 +886,8 @@ available for retry."
           ('edit (etaf-telega-backend-edit etaf-telega--backend
                                            (plist-get compose :target) text))
           (_ (etaf-telega-backend-send etaf-telega--backend text)))))
-    (when etaf-telega--paint-pending (etaf-telega--paint))))
+    (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
+      (etaf-telega--paint))))
 
 (defun etaf-telega-keep-draft (text)
   "Handle leaving the composer with TEXT.
@@ -827,7 +901,8 @@ available as the next draft."
         (etaf-telega-model-set-draft etaf-telega--model text))
       (when compose
         (etaf-telega-model-set-compose etaf-telega--model nil))))
-  (when etaf-telega--paint-pending (etaf-telega--paint)))
+  (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
+    (etaf-telega--paint)))
 
 (defun etaf-telega-select-filter (key)
   "Show the conversations of filter KEY and return to the list."
@@ -951,7 +1026,9 @@ available as the next draft."
     (with-current-buffer buffer
       (setq-local etaf-telega--model (etaf-telega-model)
                   etaf-telega--backend (funcall etaf-telega-backend-create-function)
-                  etaf-telega--paint-pending nil)
+                  etaf-telega--paint-pending nil
+                  etaf-telega--remount-pending nil
+                  etaf-telega--surface-rebuild nil)
       (use-local-map etaf-telega-mode-map)
       (setq-local emulation-mode-map-alists
                   (cons 'etaf-telega--command-maps emulation-mode-map-alists)))

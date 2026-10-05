@@ -221,7 +221,7 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
               (lambda (_)
                 (etaf-telega-backend-fake-deliver
                  etaf-telega-gui--backend
-                 (list :id 13 :sender "Alice" :time "10:02" :date "2026-10-05" :text "好的，明早见")))
+                 (list :id 99 :sender "Alice" :time "10:02" :date "2026-10-05" :text "好的，明早见")))
               (lambda (_) (string-match-p "好的，明早见" (etaf-telega-gui--text)))
               t)
              (etaf-telega-gui--action
@@ -251,6 +251,60 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                 (etaf-telega-backend-fake-complete
                  etaf-telega-gui--backend "未发送的草稿"))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :draft) "")) t)
+             (etaf-telega-gui--action
+              "composer-caret-and-clean-lines"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "光标")
+                (unless (eq (plist-get (etaf-telega-gui--info) :editing) t)
+                  (error "Composer session did not open"))
+                (unless (eq (buffer-local-value 'cursor-type etaf-telega-gui--buffer) t)
+                  (error "Editing shows no caret"))
+                (when (buffer-local-value 'truncate-lines etaf-telega-gui--buffer)
+                  (error "Editing enabled truncate-lines"))
+                (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) "光标"))))
+              t)
+             (etaf-telega-gui--action
+              "composer-click-away-keeps-draft"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "点开")
+                (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+                       (host (cl-find-if
+                              (lambda (entry)
+                                (and (not (equal (car entry) 'telega-composer))
+                                     (assq 'press (cdr entry))))
+                              (etaf-runtime-handler-entries runtime))))
+                  (unless host (error "No other interactive Host"))
+                  (etaf-dispatch-event runtime (car host) 'press))
+                ;; Return to the original conversation so later actions stay
+                ;; deterministic; the typed draft must survive both.
+                (etaf-telega-select-chat 1))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) "光标点开"))))
+              t)
+             (etaf-telega-gui--action
+              "composer-resize-keeps-editing"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "缩放")
+                (set-frame-size frame 120 40)
+                (unless (eq (plist-get (etaf-telega-gui--info) :editing) t)
+                  (error "Resize ended the composer session"))
+                ;; Clear the field and keep the empty draft so later actions
+                ;; start from a clean composer.
+                (execute-kbd-macro (kbd "C-a C-k C-c C-k")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) ""))))
+              t)
              (etaf-telega-gui--action
               "next-chat" (lambda (_)
                             (execute-kbd-macro (kbd "q"))
