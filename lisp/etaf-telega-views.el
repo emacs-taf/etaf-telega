@@ -37,9 +37,23 @@
       (push line lines))
     (nreverse lines)))
 
+(defconst etaf-telega--pictograph-regexp
+  "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE0F\u200D]"
+  "Pictographic ranges whose fallback fonts grow the canvas line height.
+Rows and pane headers keep a fixed row budget, so their text drops these
+characters instead of letting a colour emoji font stretch the line.")
+
+(defun etaf-telega--plain-text (text)
+  "Return TEXT without pictographs, keeping one canvas line height."
+  (if (stringp text)
+      (replace-regexp-in-string etaf-telega--pictograph-regexp "" text)
+    text))
+
 (defun etaf-telega--one-line (text &optional limit)
-  "Return TEXT's first line, truncated to LIMIT display cells."
-  (let ((line (car (split-string (or text "") "\n" nil))))
+  "Return TEXT's first line, truncated to LIMIT display cells.
+Pictographs are removed so the row keeps the canvas line height."
+  (let ((line (etaf-telega--plain-text
+               (car (split-string (or text "") "\n" nil)))))
     (if (and limit (> (string-width line) limit))
         (concat (truncate-string-to-width line (max 1 (- limit 1))) "…")
       line)))
@@ -186,7 +200,7 @@ chip, the timestamp and the unread badge in fixed right-aligned columns."
          (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
            (text :color (etaf-telega-color :ink)
                  :font-weight (if (and (> unread 0) (not muted)) 'bold 'normal)
-                 (expr title)))
+                 (expr (etaf-telega--plain-text title))))
          (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
            (text :color (etaf-telega-color :muted)
                  (expr (etaf-telega--one-line (plist-get chat :preview) limit)))))
@@ -287,11 +301,12 @@ chip, the timestamp and the unread badge in fixed right-aligned columns."
          (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0)
                :min-width '(ch 0) :row-gap '(lh 0)
            (text :color (etaf-telega-color :ink) :font-weight 'bold
-                 (expr title))
+                 (expr (etaf-telega--plain-text title)))
            (text :color (etaf-telega-color :muted)
-                 (expr (if (string-empty-p username)
-                           kind
-                         (format "@%s" username))))))
+                 (expr (etaf-telega--plain-text
+                        (if (string-empty-p username)
+                            kind
+                          (format "@%s" username)))))))
        (etaf-divider)
        (flex :flex-direction 'column :row-gap '(lh 1)
          (flex :flex-direction 'row :column-gap '(ch 2)
@@ -306,7 +321,8 @@ chip, the timestamp and the unread badge in fixed right-aligned columns."
        (flex :flex-direction 'column :row-gap '(lh 1)
          (text :color (etaf-telega-color :muted) "简介")
          (text :color (etaf-telega-color :ink)
-               (expr (if (string-empty-p description) "暂无简介" description))))
+               (expr (etaf-telega--plain-text
+                      (if (string-empty-p description) "暂无简介" description)))))
        (flex :flex-direction 'row :column-gap '(ch 1)
          (etaf-button :label (if pinned "取消置顶" "置顶")
                       :variant 'secondary
@@ -388,11 +404,13 @@ conversation; the narrow layout already owns the shell title bar."
           :background-color (etaf-telega-color :surface-2)
           :border-bottom (list '(px 1) 'solid (etaf-telega-color :hairline))
       (text :color (etaf-telega-color :ink) :font-weight 'bold
-            (expr (or (plist-get (etaf-value (plist-get model :chat)) :title)
-                      "对话")))
+            (expr (etaf-telega--plain-text
+                   (or (plist-get (etaf-value (plist-get model :chat)) :title)
+                       "对话"))))
       (text :color (etaf-telega-color :muted)
-            (expr (etaf-telega--chat-meta
-                   (etaf-value (plist-get model :chat))))))
+            (expr (etaf-telega--plain-text
+                   (etaf-telega--chat-meta
+                    (etaf-value (plist-get model :chat)))))))
     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
           :min-height '(lh 1) :overflow 'hidden :wrap-mode 'none
           :justify-content 'flex-end
