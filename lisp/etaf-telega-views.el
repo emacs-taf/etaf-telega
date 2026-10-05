@@ -63,31 +63,46 @@
   (concat (or (plist-get message :text) "")
           (if (plist-get message :edited) "（已编辑）" "")))
 
-(defun etaf-telega-message-rows (messages selected width)
-  "Return the display rows for MESSAGES at WIDTH.
-Each row is a plist whose `:kind' is `separator', `reply', `header' or
-`body'; SELECTED is the selected message id.  The viewport renders a slice
-of this list, so wrapping and grouping happen exactly once per paint."
-  (let (rows last-date)
+(defun etaf-telega--message-stamp (message)
+  "Return MESSAGE's Telega-style stamp: the time today, its date otherwise."
+  (let ((date (plist-get message :date))
+        (time (or (plist-get message :time) "")))
+    (cond ((null date) time)
+          ((equal date (format-time-string "%Y-%m-%d")) time)
+          (t (let ((parts (split-string date "-")))
+               (if (= 3 (length parts))
+                   (format "%s.%s.%s" (nth 2 parts) (nth 1 parts)
+                           (substring (nth 0 parts) 2))
+                 date))))))
+
+(defun etaf-telega-message-body (message width)
+  "Return MESSAGE's wrapped body text at WIDTH."
+  (mapconcat #'identity
+             (etaf-telega--wrap (etaf-telega--message-body-text message)
+                                (max 8 width))
+             "\n"))
+
+(defun etaf-telega-message-blocks (messages selected width)
+  "Return display blocks for MESSAGES at WIDTH.
+Each block is a plist with `:message', its display `:height' in rows (at
+least the avatar column), `:selected' and the day `:separator' that opens
+it.  The viewport slices blocks, so wrapping happens once per paint."
+  (let (blocks last-date)
     (dolist (message messages)
-      (when-let* ((date (plist-get message :date)))
-        (unless (equal date last-date)
-          (push (list :kind 'separator :label date :width width) rows)
-          (setq last-date date)))
-      (let ((chosen (equal (plist-get message :id) selected)))
-        (when-let* ((reply (plist-get message :reply)))
-          (push (list :kind 'reply :message message :selected chosen
-                      :text (format "  ↩ %s：%s"
-                                    (or (plist-get reply :sender) "?")
-                                    (etaf-telega--one-line (plist-get reply :text) 36)))
-                rows))
-        (push (list :kind 'header :message message :selected chosen) rows)
-        (dolist (line (etaf-telega--wrap (etaf-telega--message-body-text message)
-                                         (max 8 (- width 2))))
-          (push (list :kind 'body :message message :selected chosen
-                      :text (concat "  " line))
-                rows))))
-    (nreverse rows)))
+      (let (separator)
+        (when-let* ((date (plist-get message :date)))
+          (unless (equal date last-date)
+            (setq separator date
+                  last-date date)))
+        (let* ((lines (length (etaf-telega--wrap
+                               (etaf-telega--message-body-text message)
+                               (max 8 (- width 6)))))
+               (content (+ 1 (if (plist-get message :reply) 1 0) (max 1 lines))))
+          (push (list :message message :separator separator
+                      :selected (equal (plist-get message :id) selected)
+                      :height (+ (if separator 1 0) (max 3 content)))
+                blocks))))
+    (nreverse blocks)))
 
 (defun etaf-telega--compose-label (compose)
   "Return COMPOSE's prompt line, or nil."
@@ -144,48 +159,50 @@ of this list, so wrapping and grouping happen exactly once per paint."
     (text :color (etaf-telega-color :muted)
           (expr (etaf-telega--separator-text label width)))))
 
-(etaf-define-component etaf-telega-message-line (&key row width)
-  "Render one display ROW of the message viewport."
-  :render
-  (let ((background (when (plist-get row :selected)
-                      (etaf-telega-color :accent-soft))))
-    (pcase (plist-get row :kind)
-      ('separator
-       (etaf-node 'box (list :height '(lh 1) :overflow 'hidden :wrap-mode 'none)
-                  (list (etaf-node
-                         'text (list :color (etaf-telega-color :muted))
-                         (list (etaf-telega--separator-text (plist-get row :label) width))))))
-      ('reply
-       (etaf-node 'box (list :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-                             :background-color background)
-                  (list (etaf-node
-                         'text (list :color (etaf-telega-color :muted))
-                         (list (plist-get row :text))))))
-      ('header
-       (let ((message (plist-get row :message)))
-         (etaf-node 'box (list :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-                               :background-color background)
-                    (list (etaf-node
-                           'text (list :color (if (plist-get message :outgoing)
-                                                  (etaf-telega-color :accent)
-                                                (etaf-telega-sender-color
-                                                 (plist-get message :sender)))
-                                       :font-weight 'bold)
-                           (list (or (plist-get message :sender) "?")))
-                          (etaf-node
-                           'text (list :color (etaf-telega-color :muted))
-                           (list (format "  %s" (or (plist-get message :time) ""))))))))
-      ('body
-       (etaf-node 'box (list :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-                             :background-color background)
-                  (list (etaf-node
-                         'text (list :color (etaf-telega-color :ink))
-                         (list (plist-get row :text)))))))))
+(etaf-define-component etaf-telega-message-block (&key block width)
+  "Render one message BLOCK with its day separator and avatar."
+  :view
+  (flex :flex-direction 'column :width 'stretch
+    (flex :if (plist-get block :separator)
+      (etaf-telega-day-separator :label (plist-get block :separator)
+                                 :width width))
+    (flex :flex-direction 'row :align-items 'flex-start :width 'stretch
+          :padding '((lh 0) (ch 1)) :column-gap '(ch 1)
+          :background-color (when (plist-get block :selected)
+                              (etaf-telega-color :accent-soft))
+      (etaf-avatar :name (or (plist-get (plist-get block :message) :sender) "?")
+                   :initials (etaf-telega--initial
+                              (plist-get (plist-get block :message) :sender))
+                   :size '(ch 4)
+                   :variant (if (plist-get (plist-get block :message) :outgoing)
+                                'info 'success))
+      (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
+        (flex :flex-direction 'row :align-items 'center :width 'stretch
+              :height '(lh 1) :column-gap '(ch 1)
+          (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
+               :height '(lh 1) :overflow 'hidden :wrap-mode 'none
+            (text :color (if (plist-get (plist-get block :message) :outgoing)
+                             (etaf-telega-color :accent)
+                           (etaf-telega-sender-color
+                            (plist-get (plist-get block :message) :sender)))
+                  :font-weight 'bold
+                  (expr (or (plist-get (plist-get block :message) :sender) "?"))))
+          (text :color (etaf-telega-color :muted)
+                (expr (etaf-telega--message-stamp (plist-get block :message)))))
+        (expr (when-let* ((reply (plist-get (plist-get block :message) :reply)))
+                (list (etaf-node
+                       'text (list :color (etaf-telega-color :muted))
+                       (list (format "↩ %s：%s"
+                                     (or (plist-get reply :sender) "?")
+                                     (etaf-telega--one-line (plist-get reply :text) 36)))))))
+        (text :color (etaf-telega-color :ink)
+              (expr (etaf-telega-message-body (plist-get block :message)
+                                              (max 8 (- width 6)))))))))
 
 (etaf-define-component etaf-telega-shell
-    (&key model rows chats filters filter screen width on-filter on-back)
+    (&key model blocks chats filters filter screen width on-filter on-back)
   "Render the client shell for MODEL.
-ROWS is the visible message slice, CHATS the visible conversation slice,
+BLOCKS is the visible message slice, CHATS the visible conversation slice,
 SCREEN is `root' or `chat', and FILTERS/FILTER drive the filter tabs."
   :setup (etaf-theme-provide (etaf-telega-theme-defaults))
   :view
@@ -195,7 +212,8 @@ SCREEN is `root' or `chat', and FILTERS/FILTER drive the filter tabs."
           :padding (list (list 'lh 1) (list 'ch 2)) :column-gap '(ch 2)
           :background-color (etaf-telega-color :surface-2)
           :border-bottom (list '(px 1) 'solid (etaf-telega-color :border))
-      (flex :if (eq screen 'chat)
+      (flex :if (eq screen 'chat) :width '(ch 2) :flex-grow 0
+            :flex-basis '(ch 2) :min-width '(ch 2)
         (etaf-button :label "‹" :variant 'ghost :on-press on-back))
       (text :color (etaf-telega-color :ink) :font-weight 'bold
             (expr (if (eq screen 'chat)
@@ -223,9 +241,10 @@ SCREEN is `root' or `chat', and FILTERS/FILTER drive the filter tabs."
       (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
             :min-height '(lh 1) :overflow 'hidden :wrap-mode 'none
             :padding '((lh 0) (ch 2))
-        (expr (or (mapcar (lambda (row)
-                            (etaf-view (etaf-telega-message-line :row row :width width)))
-                          rows)
+        (expr (or (mapcar (lambda (block)
+                            (etaf-view (etaf-telega-message-block
+                                        :block block :width width)))
+                          blocks)
                   (list (etaf-node
                          'text (list :color (etaf-telega-color :muted))
                          (list (if (etaf-value (plist-get model :chat))
@@ -246,13 +265,13 @@ SCREEN is `root' or `chat', and FILTERS/FILTER drive the filter tabs."
          :on-submit #'etaf-telega-send
          :on-cancel #'etaf-telega-keep-draft)))))
 
-(defun etaf-telega-view (model width rows chats filters filter screen
+(defun etaf-telega-view (model width blocks chats filters filter screen
                             on-filter on-back)
   "Return the application View for MODEL.
-WIDTH is the message cell count, ROWS the visible message slice, CHATS the
-visible conversation slice, FILTERS/FILTER the filter tabs and SCREEN the
-active screen."
-  (etaf-view (etaf-telega-shell :model model :rows rows :chats chats
+WIDTH is the message cell count, BLOCKS the visible message slice, CHATS
+the visible conversation slice, FILTERS/FILTER the filter tabs and SCREEN
+the active screen."
+  (etaf-view (etaf-telega-shell :model model :blocks blocks :chats chats
                                 :filters filters :filter filter :screen screen
                                 :on-filter on-filter :on-back on-back
                                 :width width)))

@@ -188,8 +188,7 @@
               "delete" (lambda (_)
                          (execute-kbd-macro (kbd "d yes RET")))
               (lambda (_)
-                (and (not (string-match-p "\n  你好" (etaf-telega-gui--text)))
-                     (= (plist-get (etaf-telega-gui--info) :messages) 2))))
+                (= (plist-get (etaf-telega-gui--info) :messages) 2)))
              (etaf-telega-gui--action
               "live-message-appends"
               (lambda (_)

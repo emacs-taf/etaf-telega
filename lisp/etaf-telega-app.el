@@ -128,25 +128,43 @@ leaves the selection off screen."
                 24)
             7)))
 
+(defun etaf-telega--blocks-slice (blocks pane scroll)
+  "Return the visible slice of BLOCKS for PANE rows with SCROLL rows above."
+  (let* ((heights (mapcar (lambda (block) (plist-get block :height)) blocks))
+         (total (apply #'+ heights))
+         (bottom (- total scroll))
+         (top (max 0 (- bottom pane)))
+         (pos 0) start end)
+    (dotimes (i (length blocks))
+      (let ((next (+ pos (nth i heights))))
+        (when (and (< pos bottom) (> next top))
+          (setq start (or start i))
+          (setq end (1+ i)))
+        (setq pos next)))
+    (list :start (or start 0) :end (or end 0)
+          :visible (cl-subseq blocks (or start 0) (or end 0)))))
+
 (defun etaf-telega--layout ()
-  "Return current width, pane rows, all message rows and the visible slice.
+  "Return current width, pane rows and the visible message block slice.
 The viewport follows the newest message unless the model holds a scroll
 offset; every value is clamped so the slice always fits the pane."
   (let* ((width (etaf-telega--width))
          (pane (etaf-telega--pane-rows))
          (model etaf-telega--model)
-         (rows (if model
-                   (etaf-telega-message-rows
-                    (etaf-telega-model-messages model)
-                    (etaf-telega-model-selected-id model) width)
-                 nil))
-         (total (length rows))
-         (scroll (min (if model (etaf-telega-model-scroll model) 0)
-                      (max 0 (- total pane))))
-         (end (- total scroll))
-         (start (max 0 (- end pane))))
-    (list :width width :pane pane :rows rows :total total :scroll scroll
-          :start start :end end :visible (cl-subseq rows start end))))
+         (blocks (if model
+                     (etaf-telega-message-blocks
+                      (etaf-telega-model-messages model)
+                      (etaf-telega-model-selected-id model) width)
+                   nil))
+         (heights (mapcar (lambda (block) (plist-get block :height)) blocks))
+         (total-height (apply #'+ heights))
+         (scroll (min (max 0 (if model (etaf-telega-model-scroll model) 0))
+                      (max 0 (- total-height pane))))
+         (slice (etaf-telega--blocks-slice blocks pane scroll)))
+    (list :width width :pane pane :blocks blocks :heights heights
+          :total-height total-height :scroll scroll
+          :start (plist-get slice :start) :end (plist-get slice :end)
+          :visible (plist-get slice :visible))))
 
 (defvar-local etaf-telega--paint-depth 0
   "Depth of the current synchronous paint batch.")
@@ -228,8 +246,12 @@ session ends."
           :older (lambda (messages)
                    (report (lambda ()
                              (let* ((older (reverse messages))
-                                    (added (length (etaf-telega-message-rows
-                                                    older nil (etaf-telega--width)))))
+                                    (added (apply #'+
+                                                  (mapcar (lambda (block)
+                                                            (plist-get block :height))
+                                                          (etaf-telega-message-blocks
+                                                           older nil
+                                                           (etaf-telega--width))))))
                                (etaf-telega-model-prepend-messages etaf-telega--model older)
                                ;; A reader who scrolled away keeps their place;
                                ;; a follower still watches the newest rows.
@@ -385,27 +407,30 @@ session ends."
                                    :before (plist-get (car messages) :id)))))
 
 (defun etaf-telega--scroll-to-selection ()
-  "Adjust the viewport so the selected message's rows are visible."
+  "Adjust the viewport so the selected message's block is visible."
   (let* ((layout (etaf-telega--layout))
-         (rows (plist-get layout :rows))
+         (blocks (plist-get layout :blocks))
+         (heights (plist-get layout :heights))
          (selected (etaf-telega-model-selected-id etaf-telega--model))
-         (start (plist-get layout :start))
-         (end (plist-get layout :end))
          (pane (plist-get layout :pane))
-         (total (plist-get layout :total))
-         (first (cl-position selected rows
-                             :key (lambda (row) (plist-get (plist-get row :message) :id))
-                             :test #'equal))
-         (last (cl-position selected rows
-                            :key (lambda (row) (plist-get (plist-get row :message) :id))
-                            :test #'equal :from-end t)))
-    (when first
-      (cond ((< first start)
-             (etaf-telega-model-set-scroll
-              etaf-telega--model (max 0 (- total (min total (+ first pane))))))
-            ((>= last end)
-             (etaf-telega-model-set-scroll
-              etaf-telega--model (max 0 (- total (1+ last)))))))))
+         (total (plist-get layout :total-height))
+         (index (cl-position selected blocks
+                             :key (lambda (block)
+                                    (plist-get (plist-get block :message) :id))
+                             :test #'equal)))
+    (when index
+      (let ((top 0))
+        (dotimes (i index) (setq top (+ top (nth i heights))))
+        (let* ((bottom (+ top (nth index heights)))
+               (view-bottom (- total (plist-get layout :scroll)))
+               (view-top (max 0 (- view-bottom pane))))
+          (cond ((< top view-top)
+                 (etaf-telega-model-set-scroll
+                  etaf-telega--model
+                  (max 0 (- total (min total (+ top pane))))))
+                ((> bottom view-bottom)
+                 (etaf-telega-model-set-scroll
+                  etaf-telega--model (max 0 (- total bottom))))))))))
 
 (defun etaf-telega--move-message (delta)
   "Move the message selection by DELTA messages."
@@ -420,7 +445,7 @@ session ends."
     (etaf-telega-model-set-scroll
      etaf-telega--model
      (min (max 0 (or offset 0))
-          (max 0 (- (plist-get layout :total) (plist-get layout :pane)))))
+          (max 0 (- (plist-get layout :total-height) (plist-get layout :pane)))))
     (etaf-telega--paint)))
 
 (defun etaf-telega-page-up (&optional rows)
@@ -431,7 +456,7 @@ At the top of the loaded history, load an older page."
          (step (or rows (max 1 (1- (plist-get layout :pane))))))
     (etaf-telega--scroll-to (+ (plist-get layout :scroll) step))
     (when (and (zerop (plist-get (etaf-telega--layout) :start))
-               (plist-get (etaf-telega--layout) :total))
+               (plist-get (etaf-telega--layout) :blocks))
       (etaf-telega-load-more))))
 
 (defun etaf-telega-page-down (&optional rows)
