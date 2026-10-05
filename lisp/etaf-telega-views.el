@@ -114,14 +114,6 @@ it.  The viewport slices blocks, so wrapping happens once per paint."
       ('edit (format "编辑消息：%s　C-c C-k 取消编辑"
                      (etaf-telega--one-line (plist-get target :text) 40))))))
 
-(etaf-define-component etaf-telega-avatar (&key title)
-  "Render a two-cell avatar block for TITLE."
-  :view
-  (flex :width '(ch 2) :height '(lh 2) :align-items 'center :justify-content 'center
-        :background-color (etaf-telega-sender-color title)
-    (text :color (etaf-telega-color :bg) :font-weight 'bold
-          (expr (etaf-telega--initial title)))))
-
 (etaf-define-component etaf-telega-chat-row (&key chat selected)
   "Render one CHAT row; pressing it opens the conversation."
   :view
@@ -240,6 +232,7 @@ SCREEN is `root' or `chat', and FILTERS/FILTER drive the filter tabs."
           :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
       (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
             :min-height '(lh 1) :overflow 'hidden :wrap-mode 'none
+            :justify-content 'flex-end
             :padding '((lh 0) (ch 2))
         (expr (or (mapcar (lambda (block)
                             (etaf-view (etaf-telega-message-block
