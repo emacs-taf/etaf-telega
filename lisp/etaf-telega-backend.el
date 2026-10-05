@@ -22,6 +22,7 @@
 ;;   :edited   (message plist)          message whose text was replaced
 ;;   :deleted  (id)                     id of a removed message
 ;;   :read     (list of ids)            messages accepted as read
+;;   :describe (chat profile plist)     one chat's profile screen data
 ;;   :error    (string)                 readable failure
 ;;
 ;; Message plists carry (:id :outgoing :sender :time :date :edited :text) in
@@ -38,6 +39,7 @@
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
 ;;   (delete BACKEND MESSAGE)             remove one message
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
+;;   (describe BACKEND CHAT-ID)           report the chat profile
 ;;   (chat-action BACKEND CHAT-ID ACTION &optional VALUE)
 ;;                                        ACTION is `read', `unread', `pin',
 ;;                                        `mute' or `archive'; pin/mute/archive
@@ -80,6 +82,11 @@ BEFORE is the oldest loaded message id, or nil for the newest page.")
 (cl-defgeneric etaf-telega-backend-chat-action (backend chat-id action &optional value)
   "Apply ACTION to CHAT-ID through BACKEND.
 `read' and `unread' set the state; `pin', `mute' and `archive' toggle it.")
+
+(cl-defgeneric etaf-telega-backend-describe (backend chat-id)
+  "Report the selected chat's profile through BACKEND's `:describe' callback.
+The plist carries :id, :title, :username, :kind, :members, :description,
+:pinned, :muted and :unread.")
 
 (cl-defgeneric etaf-telega-backend-stop (backend)
   "Release BACKEND's connection without touching Telega's account data.")
@@ -218,6 +225,17 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
       (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
     message-ids))
 
+(cl-defmethod etaf-telega-backend-describe ((backend etaf-telega-backend-fake)
+                                             chat-id)
+  "Report CHAT-ID's stored profile through the `:describe' callback."
+  (let ((chat (cl-find chat-id (etaf-telega-backend-fake-chats backend)
+                       :key (lambda (item) (plist-get item :id)) :test #'equal)))
+    (when-let* ((report (and chat
+                             (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                        :describe))))
+      (funcall report (copy-tree chat)))
+    chat))
+
 (cl-defmethod etaf-telega-backend-chat-action ((backend etaf-telega-backend-fake)
                                                chat-id action &optional value)
   "Apply ACTION to CHAT-ID in BACKEND's stored chats."
@@ -272,6 +290,12 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
 (declare-function telega-chat-get "telega-chat" (chat-id &optional offline-p))
 (declare-function telega-chat-title "telega-chat" (chat &optional fmt-type no-badges))
 (declare-function telega-chat-match-p "telega-chat" (chat chat-temex &optional no-error))
+(declare-function telega-chat--info "telega-chat" (chat &optional locally-p))
+(declare-function telega-chat--info-locally "telega-chat" (chat))
+(declare-function telega-msg-match-p "telega-msg" (msg msg-temex &optional no-error))
+(declare-function telega-tl-str "telega-core" (obj &optional prop no-properties))
+(declare-function telega-tl-get0 "telega-core" (obj prop1 &rest props))
+(declare-function telega-user-online-p "telega-user" (user))
 (declare-function telega-chat-muted-p "telega-chat" (chat))
 (declare-function telega-chat-toggle-read "telega-chat" (chat))
 (declare-function telega-chat-toggle-pin "telega-chat" (chat))
@@ -315,6 +339,13 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                        'private)
                       (t 'group))
           :archived (and (ignore-errors (telega-chat-match-p chat 'archive)) t)
+          :mention (or (plist-get chat :unread_mention_count) 0)
+          :online (and (ignore-errors
+                        (telega-user-online-p (telega-chat--info-locally chat)))
+                       t)
+          :username (or (ignore-errors
+                         (telega-tl-str (telega-chat--info-locally chat) :username))
+                        "")
           :time (if last
                     (format-time-string
                      "%H:%M" (seconds-to-time (or (plist-get last :date) 0)))
@@ -333,7 +364,36 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
         :date (format-time-string "%Y-%m-%d"
                                   (seconds-to-time (or (plist-get message :date) 0)))
         :edited (eq t (plist-get message :edit_date))
+        :kind (etaf-telega-backend-telega--message-kind message)
+        :file (etaf-telega-backend-telega--message-file message)
+        :link (etaf-telega-backend-telega--message-link message)
         :text (or (ignore-errors (telega-msg-content-text message)) "")))
+
+(defun etaf-telega-backend-telega--message-kind (message)
+  "Return MESSAGE's content kind for the interface."
+  (cond ((ignore-errors (telega-msg-match-p message '(type Photo))) 'photo)
+        ((ignore-errors (telega-msg-match-p message '(type Video))) 'video)
+        ((ignore-errors (telega-msg-match-p message '(type Animation))) 'animation)
+        ((ignore-errors (telega-msg-match-p message '(type VoiceNote))) 'voice)
+        ((ignore-errors (telega-msg-match-p message '(type Audio))) 'audio)
+        ((ignore-errors (telega-msg-match-p message '(type Sticker))) 'sticker)
+        ((ignore-errors (telega-msg-match-p message '(type Document))) 'file)
+        (t 'text)))
+
+(defun etaf-telega-backend-telega--message-file (message)
+  "Return MESSAGE's document (:name :size) when it carries one."
+  (let ((document (ignore-errors (plist-get (plist-get message :content) :document))))
+    (when document
+      (list :name (or (plist-get document :file_name) "")
+            :size (or (plist-get document :file_size) 0)))))
+
+(defun etaf-telega-backend-telega--message-link (message)
+  "Return MESSAGE's web page (:site :title) when it carries one."
+  (let ((page (ignore-errors (plist-get (plist-get message :content) :web_page))))
+    (when page
+      (list :site (or (plist-get page :site_name) "")
+            :title (or (plist-get page :title) "")
+            :description (or (plist-get page :description) "")))))
 
 (defun etaf-telega-backend-telega--chats ()
   "Return all known chats as projections, newest first."
@@ -530,6 +590,34 @@ account and its database."
     (error (etaf-telega-backend-telega--report
             backend :error (error-message-string err))
            nil)))
+
+(cl-defmethod etaf-telega-backend-describe ((backend etaf-telega-backend-telega)
+                                             chat-id)
+  "Report CHAT-ID's live profile through Telega's own objects."
+  (let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
+         (chat (ignore-errors (telega-chat-get chat-id))))
+    (when chat
+      (condition-case err
+          (let* ((info (ignore-errors (telega-chat--info-locally chat))))
+            (when-let* ((report (plist-get callbacks :describe)))
+              (funcall report
+                       (list :id chat-id
+                             :title (or (ignore-errors (telega-chat-title chat)) "?")
+                             :username (or (ignore-errors (telega-tl-str info :username)) "")
+                             :kind (plist-get (etaf-telega-backend-telega--project-chat chat)
+                                              :kind)
+                             :members (or (ignore-errors
+                                            (telega-tl-get0 info :member_count))
+                                          0)
+                             :description (or (ignore-errors
+                                                (telega-tl-str info :description))
+                                              "")
+                             :pinned (eq t (plist-get chat :is_pinned))
+                             :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
+                             :unread (or (plist-get chat :unread_count) 0)))))
+        (error (etaf-telega-backend-telega--report
+                backend :error (error-message-string err)))))
+    chat-id))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-telega)
                                         text &optional reply-to)

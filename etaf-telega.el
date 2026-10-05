@@ -40,8 +40,17 @@
 ;; Open the selected conversation, or reload the open one.
 ;; Function: etaf-telega-select-filter (key)
 ;; Show the conversations of filter KEY (main, groups, channels, archived).
+;; Function: etaf-telega-describe ()
+;; Show the selected conversation's profile screen.
+;; Function: etaf-telega-actions ()
+;; Show the selected message's action menu screen.
+;; Function: etaf-telega-toggle-pin ()
+;; Toggle the open conversation's pinned state.
+;; Function: etaf-telega-toggle-mute ()
+;; Toggle the open conversation's muted state.
 ;; Function: etaf-telega-back ()
-;; Leave the conversation screen and show the chat list.
+;; Return from a profile or action screen to the conversation, or from the
+;; conversation to the chat list.
 ;; Function: etaf-telega-quit ()
 ;; Leave the conversation screen, or close the client from the list.
 ;; Function: etaf-telega-next-chat ()
@@ -107,6 +116,9 @@
 ;; Accept MESSAGE-IDS in the selected chat as read.
 ;; Function: etaf-telega-backend-chat-action (backend chat-id action &optional value)
 ;; Apply ACTION to CHAT-ID: read/unread set the state, pin/mute/archive toggle.
+;; Function: etaf-telega-backend-describe (backend chat-id)
+;; Report the chat's profile (title, username, kind, members, description,
+;; pinned, muted, unread) through the `:describe' callback.
 ;; Function: etaf-telega-backend-fake-create (&key chats histories responder)
 ;; Return an offline backend seeded with CHATS and HISTORIES.  RESPONDER, when
 ;; non-nil, is called with (BACKEND TEXT) after each send so a caller can

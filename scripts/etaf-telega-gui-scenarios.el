@@ -23,7 +23,8 @@
 (defun etaf-telega-gui--backend-create ()
   "Return a fake backend with two chats and a short history."
   (let ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的")
+    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
+                           :link (list :site "Example" :title "示例链接"))
                      (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好"))
              histories)
     (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :date "2026-10-04" :text "周报收到"))
@@ -31,7 +32,8 @@
     (setq etaf-telega-gui--backend
           (etaf-telega-backend-fake-create
            :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02"
-                              :kind 'private)
+                              :kind 'private :username "alice" :pinned t
+                              :description "GUI 验收用的假档案")
                         (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"
                               :kind 'group)
                         (list :id 3 :title "每日新闻" :unread 5 :preview "头条速览" :time "08:00"
@@ -140,6 +142,22 @@
                                (string-match-p "Alice" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
               "chat-open-again" (lambda (_) (execute-kbd-macro (kbd "RET")))
+              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
+             (etaf-telega-gui--action
+              "describe-screen" (lambda (_) (execute-kbd-macro (kbd "t")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'describe)
+                     (string-match-p "@alice" (etaf-telega-gui--text)))) t)
+             (etaf-telega-gui--action
+              "describe-back" (lambda (_) (execute-kbd-macro (kbd "q")))
+              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
+             (etaf-telega-gui--action
+              "actions-screen" (lambda (_) (execute-kbd-macro (kbd "o")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'actions)
+                     (string-match-p "消息操作" (etaf-telega-gui--text)))) t)
+             (etaf-telega-gui--action
+              "actions-back" (lambda (_) (execute-kbd-macro (kbd "q")))
               (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
              (etaf-telega-gui--action
               "select-previous-message" (lambda (_) (execute-kbd-macro (kbd "p")))

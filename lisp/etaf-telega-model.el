@@ -31,6 +31,7 @@
         :chat-scroll (etaf-ref 0 :name 'etaf-telega-chat-scroll)
         :cursor (etaf-ref nil :name 'etaf-telega-cursor)
         :screen (etaf-ref 'root :name 'etaf-telega-screen)
+        :describe (etaf-ref nil :name 'etaf-telega-describe)
         :filter (etaf-ref 'main :name 'etaf-telega-filter)
         :draft (etaf-ref "" :name 'etaf-telega-draft)))
 
@@ -97,6 +98,14 @@
 (defun etaf-telega-model-set-screen (model screen)
   "Switch MODEL to SCREEN, `root' or `chat'."
   (setf (etaf-value (plist-get model :screen)) screen))
+
+(defun etaf-telega-model-describe (model)
+  "Return MODEL's chat profile, or nil."
+  (etaf-value (plist-get model :describe)))
+
+(defun etaf-telega-model-set-describe (model describe)
+  "Set MODEL's chat profile to DESCRIBE."
+  (setf (etaf-value (plist-get model :describe)) describe))
 
 (defun etaf-telega-model-filter (model)
   "Return MODEL's active chat filter key."

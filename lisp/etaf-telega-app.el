@@ -68,13 +68,18 @@ Tests bind this to a fake backend factory so no network is touched.")
             2)))
 
 (defconst etaf-telega-filters
-  '((main . "全部") (groups . "群组") (channels . "频道") (archived . "归档"))
+  '((main . "全部") (important . "重要") (online . "在线")
+    (groups . "群组") (channels . "频道") (archived . "归档"))
   "Chat filters shown in the top tab strip.")
 
 (defun etaf-telega--filter-chats (chats key)
   "Return CHATS matching filter KEY."
   (pcase key
     ('main (cl-remove-if (lambda (chat) (plist-get chat :archived)) chats))
+    ('important (cl-remove-if-not (lambda (chat)
+                                    (> (or (plist-get chat :mention) 0) 0))
+                                  chats))
+    ('online (cl-remove-if-not (lambda (chat) (plist-get chat :online)) chats))
     ('groups (cl-remove-if-not (lambda (chat)
                                  (eq (plist-get chat :kind) 'group)) chats))
     ('channels (cl-remove-if-not (lambda (chat)
@@ -204,7 +209,8 @@ Inside a paint batch the request waits for the batch to finish."
                       (etaf-telega-model-filter etaf-telega--model)
                       (etaf-telega-model-screen etaf-telega--model)
                       #'etaf-telega-select-filter
-                      #'etaf-telega-back)))
+                      #'etaf-telega-back
+                      #'etaf-telega--run-action)))
 
 (defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
@@ -282,6 +288,10 @@ session ends."
                      (report (lambda ()
                                (etaf-telega-model-append-message
                                 etaf-telega--model message))))
+          :describe (lambda (describe)
+                      (report (lambda ()
+                                (etaf-telega-model-set-describe
+                                 etaf-telega--model describe))))
           :error (lambda (message)
                    (report (lambda ()
                              (etaf-telega-model-set-status etaf-telega--model
@@ -586,18 +596,73 @@ available as the next draft."
     (etaf-telega--paint)))
 
 (defun etaf-telega-back ()
-  "Leave the conversation screen and show the chat list."
+  "Leave the current screen: profiles and menus return to the conversation."
   (interactive)
   (when etaf-telega--model
-    (etaf-telega-model-set-screen etaf-telega--model 'root)
+    (etaf-telega-model-set-screen
+     etaf-telega--model
+     (if (memq (etaf-telega-model-screen etaf-telega--model)
+               '(describe actions))
+         'chat
+       'root))
     (etaf-telega--paint)))
 
-(defun etaf-telega-quit ()
-  "Leave the conversation screen, or close the client from the list."
+(defun etaf-telega-describe ()
+  "Show the selected conversation's profile."
   (interactive)
-  (if (eq (etaf-telega-model-screen etaf-telega--model) 'chat)
-      (etaf-telega-back)
-    (etaf-telega-close)))
+  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
+         (chat (or (etaf-telega-model-chat model)
+                   (etaf-telega-model-chat-by-id model
+                                                 (etaf-telega-model-cursor model)))))
+    (unless chat (user-error "先选择一个对话"))
+    (etaf-telega-model-set-screen model 'describe)
+    (etaf-telega--paint)
+    (etaf-telega-backend-describe etaf-telega--backend (plist-get chat :id))))
+
+(defun etaf-telega-actions ()
+  "Show the selected message's action menu."
+  (interactive)
+  (etaf-telega-selected-message)
+  (etaf-telega-model-set-screen etaf-telega--model 'actions)
+  (etaf-telega--paint))
+
+(defun etaf-telega--chat-action (action)
+  "Apply ACTION to the open conversation and refresh its profile."
+  (let ((chat (etaf-telega-model-chat etaf-telega--model)))
+    (when chat
+      (etaf-telega-backend-chat-action etaf-telega--backend
+                                       (plist-get chat :id) action)
+      (when (eq (etaf-telega-model-screen etaf-telega--model) 'describe)
+        (etaf-telega-backend-describe etaf-telega--backend (plist-get chat :id))))))
+
+(defun etaf-telega-toggle-pin ()
+  "Toggle the open conversation's pinned state."
+  (interactive)
+  (etaf-telega--chat-action 'pin))
+
+(defun etaf-telega-toggle-mute ()
+  "Toggle the open conversation's muted state."
+  (interactive)
+  (etaf-telega--chat-action 'mute))
+
+(defun etaf-telega--run-action (action)
+  "Run ACTION from the message menu or the conversation profile."
+  (pcase action
+    ((or 'reply 'edit 'delete 'copy)
+     (etaf-telega-model-set-screen etaf-telega--model 'chat)
+     (pcase action
+       ('reply (etaf-telega-reply))
+       ('edit (etaf-telega-edit))
+       ('delete (etaf-telega-delete))
+       ('copy (etaf-telega-copy))))
+    ((or 'pin 'mute 'read) (etaf-telega--chat-action action))))
+
+(defun etaf-telega-quit ()
+  "Leave the current screen, or close the client from the chat list."
+  (interactive)
+  (if (eq (etaf-telega-model-screen etaf-telega--model) 'root)
+      (etaf-telega-close)
+    (etaf-telega-back)))
 
 (defvar etaf-telega-mode-map
   (let ((map (make-sparse-keymap)))
@@ -608,6 +673,7 @@ available as the next draft."
                     ("SPC" . etaf-telega-page-down) ("S-SPC" . etaf-telega-page-up)
                     ("C-v" . etaf-telega-page-down) ("M-v" . etaf-telega-page-up)
                     ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
+                    ("o" . etaf-telega-actions) ("t" . etaf-telega-describe)
                     ("d" . etaf-telega-delete) ("c" . etaf-telega-copy)
                     ("i" . etaf-telega-compose)
                     ("RET" . etaf-telega-return)

@@ -262,6 +262,72 @@
       (with-current-buffer buffer (call-interactively #'etaf-telega-return))
       (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat)))))
 
+(ert-deftest etaf-telega-tests-describe-screen-shows-the-profile ()
+  "t shows the conversation profile and its actions stay on the screen."
+  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private
+                            :username "alice" :members 0 :description "测试简介"
+                            :pinned t :muted nil)))
+         (backend (etaf-telega-backend-fake-create
+                   :chats chats :histories (make-hash-table :test #'equal))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-select-chat 1)
+      (with-current-buffer buffer (call-interactively #'etaf-telega-describe))
+      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'describe))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "Alice" text))
+        (should (string-match-p "@alice" text))
+        (should (string-match-p "测试简介" text)))
+      (with-current-buffer buffer (call-interactively #'etaf-telega-toggle-mute))
+      (should (eq (plist-get (car (etaf-telega-backend-fake-chats backend)) :muted) t))
+      (with-current-buffer buffer (call-interactively #'etaf-telega-back))
+      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat)))))
+
+(ert-deftest etaf-telega-tests-message-actions-menu ()
+  "o opens the action menu for the selected message."
+  (etaf-telega-test--with-client buffer nil
+    (etaf-telega-select-chat 1)
+    (with-current-buffer buffer (call-interactively #'etaf-telega-actions))
+    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'actions))
+    (let ((text (etaf-telega-test--text buffer)))
+      (should (string-match-p "消息操作" text))
+      (should (string-match-p "回复" text))
+      (should (string-match-p "删除" text)))
+    (with-current-buffer buffer (call-interactively #'etaf-telega-back))
+    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat))))
+
+(ert-deftest etaf-telega-tests-media-and-link-messages-show-extras ()
+  "Media and link messages carry placeholder lines."
+  (let* ((histories (make-hash-table :test #'equal)))
+    (puthash 1 (list (list :id 12 :sender "Alice" :time "10:01" :kind 'photo :text "")
+                     (list :id 11 :sender "Alice" :time "10:00"
+                           :link (list :site "Example" :title "标题") :text "看这个"))
+             histories)
+    (let ((backend (etaf-telega-backend-fake-create
+                    :chats (list (list :id 1 :title "Alice" :unread 0))
+                    :histories histories)))
+      (etaf-telega-test--with-client buffer backend
+        (etaf-telega-select-chat 1)
+        (let ((text (etaf-telega-test--text buffer)))
+          (should (string-match-p "\[图片\]" text))
+          (should (string-match-p "链接 Example：标题" text)))))))
+
+(ert-deftest etaf-telega-tests-important-and-online-filters ()
+  "The importance and online filters narrow the chat list."
+  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private :online t)
+                      (list :id 2 :title "工作群" :unread 0 :kind 'group :mention 3)
+                      (list :id 3 :title "新闻频道" :unread 5 :kind 'channel)))
+         (backend (etaf-telega-backend-fake-create
+                   :chats chats :histories (make-hash-table :test #'equal))))
+    (etaf-telega-test--with-client buffer backend
+      (with-current-buffer buffer (etaf-telega-select-filter 'important))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "工作群" text))
+        (should-not (string-match-p "Alice" text)))
+      (with-current-buffer buffer (etaf-telega-select-filter 'online))
+      (let ((text (etaf-telega-test--text buffer)))
+        (should (string-match-p "Alice" text))
+        (should-not (string-match-p "新闻频道" text))))))
+
 (ert-deftest etaf-telega-tests-filter-tabs-switch-the-list ()
   "Filter tabs narrow the chat list inside the one client buffer."
   (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private)
