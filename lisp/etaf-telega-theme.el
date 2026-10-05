@@ -19,6 +19,8 @@
     (:accent . "#4493f8")
     (:accent-soft . "#152c4d")
     (:border . "#30363d")
+    (:hairline . "#1f242c")
+    (:danger . "#f85149")
     (:ok . "#3fb950"))
   "Semantic palette of the application.")
 
@@ -74,7 +76,10 @@ with the components the app actually uses."
           :ui-danger-border (etaf-telega-color :border)
           :ui-warning-fg (etaf-telega-color :muted)
           :ui-warning-bg (etaf-telega-color :surface-2)
-          :ui-warning-border (etaf-telega-color :border))))
+          :ui-warning-border (etaf-telega-color :border)
+          :ui-info-fg "#FFFFFF"
+          :ui-info-bg accent
+          :ui-info-border accent)))
 
 (provide 'etaf-telega-theme)
 ;;; etaf-telega-theme.el ends here

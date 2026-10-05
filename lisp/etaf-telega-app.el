@@ -50,21 +50,48 @@ Tests bind this to a fake backend factory so no network is touched.")
   "Return the window showing the current buffer, if any."
   (get-buffer-window (current-buffer) t))
 
+(defconst etaf-telega-split-threshold 110
+  "Window width in columns at which the client splits its panes.")
+
+(defun etaf-telega--split-p ()
+  "Return non-nil when the wide master-detail layout fits the window."
+  (and (etaf-telega--window)
+       (>= (window-body-width (etaf-telega--window))
+           etaf-telega-split-threshold)))
+
+(defun etaf-telega--list-columns ()
+  "Return the conversation column width of the wide layout."
+  (max 40 (min 52 (floor (* (or (and (etaf-telega--window)
+                                     (window-body-width (etaf-telega--window)))
+                                80)
+                          0.38)))))
+
 (defun etaf-telega--width ()
-  "Return the message width for the current window."
+  "Return the message cell width for the current window.
+The wide layout reserves the conversation column, so messages wrap to the
+remaining pane; the narrow layout owns the full width."
   (max 20 (- (or (and (etaf-telega--window) (window-body-width)) 80)
-             etaf-telega-sidebar-width 6)))
+             (if (etaf-telega--split-p) (+ (etaf-telega--list-columns) 5) 4))))
+
+(defun etaf-telega--list-width ()
+  "Return the conversation-list width in character cells."
+  (max 24 (- (if (etaf-telega--split-p)
+                 (etaf-telega--list-columns)
+               (or (and (etaf-telega--window) (window-body-width)) 84))
+             2)))
 
 (defun etaf-telega--runtime ()
   "Return the mounted runtime of the current buffer, if any."
   (etaf-runtime-for-buffer (current-buffer)))
 
 (defun etaf-telega--chat-rows ()
-  "Return the sidebar's visible chat row count."
+  "Return the sidebar's visible chat row count.
+Each conversation row is two lines tall; the remainder covers the title
+bar, the filter tabs and their borders."
   (max 1 (/ (max 2 (- (or (and (etaf-telega--window)
                                (window-body-height (etaf-telega--window)))
                          24)
-                      2))
+                      4))
             2)))
 
 (defconst etaf-telega-filters
@@ -96,10 +123,8 @@ Tests bind this to a fake backend factory so no network is touched.")
                                     (lambda (chat)
                                       (> (or (plist-get chat :unread) 0) 0))
                                     matching))))
-              (list :key (car entry)
-                    :label (if (> unread 0)
-                               (format "%s %d" (cdr entry) unread)
-                             (cdr entry)))))
+              (append (list :key (car entry) :label (cdr entry))
+                      (when (> unread 0) (list :count unread)))))
           etaf-telega-filters))
 
 (defun etaf-telega--chat-layout ()
@@ -128,10 +153,11 @@ leaves the selection off screen."
           :chats (cl-subseq chats start (min total (+ start visible))))))
 
 (defun etaf-telega--pane-rows ()
-  "Return the message pane's visible row count."
+  "Return the message pane's visible row count.
+The remainder covers the title bar and the composer."
   (max 3 (- (or (and (etaf-telega--window) (window-body-height (etaf-telega--window)))
                 24)
-            7)))
+            8)))
 
 (defun etaf-telega--blocks-slice (blocks pane scroll)
   "Return the visible slice of BLOCKS for PANE rows with SCROLL rows above."
@@ -210,7 +236,9 @@ Inside a paint batch the request waits for the batch to finish."
                       (etaf-telega-model-screen etaf-telega--model)
                       #'etaf-telega-select-filter
                       #'etaf-telega-back
-                      #'etaf-telega--run-action)))
+                      #'etaf-telega--run-action
+                      (etaf-telega--list-width)
+                      (etaf-telega--split-p))))
 
 (defun etaf-telega--paint-now ()
   "Reproject the model into the mounted runtime.
@@ -337,6 +365,7 @@ session ends."
             :cursor (and model (etaf-telega-model-cursor model))
             :compose (plist-get compose :kind)
             :draft (and model (etaf-telega-model-draft model))
+            :split (etaf-telega--split-p)
             :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
 
 (defun etaf-telega--compose-focus ()
@@ -726,6 +755,35 @@ The backend stops observing without closing Telega's server or account."
     (when (and buffer (buffer-live-p buffer))
       (with-current-buffer buffer (etaf-telega--dispose))
       (kill-buffer buffer))))
+
+(defvar-local etaf-telega--resize-timer nil
+  "Pending debounced repaint after a window resize.")
+
+(defun etaf-telega--resize-repaint (buffer)
+  "Repaint BUFFER's client after its window size settled.
+The projection bakes cell counts into the View, so a resize has to reproject
+instead of only refitting the tree."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq etaf-telega--resize-timer nil)
+      (when (and etaf-telega--model (etaf-telega--window))
+        (etaf-telega--paint-now)))))
+
+(defun etaf-telega--schedule-resize-repaint ()
+  "Repaint this client shortly after its window size settles."
+  (when (timerp etaf-telega--resize-timer)
+    (cancel-timer etaf-telega--resize-timer))
+  (setq etaf-telega--resize-timer
+        (run-at-time 0.15 nil #'etaf-telega--resize-repaint (current-buffer))))
+
+(defun etaf-telega--window-size-changed (frame)
+  "Repaint every mounted client displayed in FRAME after it settles."
+  (dolist (window (window-list frame 'no-minibuf))
+    (with-current-buffer (window-buffer window)
+      (when (and (bound-and-true-p etaf-telega--model) etaf-telega--model)
+        (etaf-telega--schedule-resize-repaint)))))
+
+(add-hook 'window-size-change-functions #'etaf-telega--window-size-changed)
 
 (provide 'etaf-telega-app)
 ;;; etaf-telega-app.el ends here
