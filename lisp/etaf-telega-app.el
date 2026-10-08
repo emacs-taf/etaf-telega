@@ -341,9 +341,7 @@ the session ends."
         (setq etaf-telega--paint-pending nil
               etaf-telega--remount-pending nil
               etaf-telega--surface-rebuild nil)
-        (etaf-mount (current-buffer) (lambda () (etaf-telega--view))
-                    (list :viewport-width (window-body-width (etaf-telega--window) t)
-                          :viewport-height (window-body-height (etaf-telega--window))))
+        (etaf-mount (current-buffer) (lambda () (etaf-telega--view)))
         (setq-local cursor-type nil)))))
 
 (defun etaf-telega--paint-now ()
@@ -1069,9 +1067,7 @@ available as the next draft."
     ;; The client owns the current window; never let display-buffer split it.
     (pop-to-buffer buffer '((display-buffer-same-window)))
     (with-current-buffer buffer
-      (etaf-mount buffer (lambda () (etaf-telega--view))
-                  (list :viewport-width (window-body-width (etaf-telega--window) t)
-                        :viewport-height (window-body-height (etaf-telega--window))))
+      (etaf-mount buffer (lambda () (etaf-telega--view)))
       (setq-local cursor-type nil)
       (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t)
       (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks buffer))
