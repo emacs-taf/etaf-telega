@@ -20,10 +20,23 @@
   (unless etaf-telega-gui--hold
     (etaf-telega-backend-fake-complete backend text)))
 
+(defun etaf-telega-gui--photo ()
+  "Return an in-memory photo preview, like Telega's minithumbnail."
+  (create-image
+   (concat "<svg xmlns='http://www.w3.org/2000/svg' width='320' height='200'>"
+           "<rect width='320' height='200' fill='#3b6ea8'/>"
+           "<circle cx='250' cy='60' r='30' fill='#f2c14e'/>"
+           "<path d='M0 200 L110 90 L200 170 L250 130 L320 200 Z' fill='#2c4f72'/></svg>")
+   'svg t))
+
 (defun etaf-telega-gui--backend-create ()
-  "Return a fake backend with two chats and a short history."
+  "Return a fake backend with three chats, a short history and one photo."
   (let ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
+    (puthash 1 (list (list :id 13 :sender "Alice" :time "10:02" :date "2026-10-04"
+                           :kind 'photo :text "海边"
+                           :media (list :src (etaf-telega-gui--photo)
+                                        :width 320 :height 200))
+                     (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
                            :link (list :site "Example" :title "示例链接"))
                      (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好"))
              histories)
@@ -61,24 +74,18 @@
     (buffer-substring-no-properties (point-min) (point-max))))
 
 (defun etaf-telega-gui--geometry ()
-  "Check the complete canvas and its window fit.
-The canvas must never overflow the window and must fill its width, so a
-hidden reserve or an over-tall row budget cannot slip through the suite."
+  "Check that the document spans the window's width without overflowing.
+The client is a scrolling document, so its height follows the content; its
+width must follow the window exactly at every size."
   (let* ((window (get-buffer-window etaf-telega-gui--buffer))
          (size (and window (window-text-pixel-size window)))
          (body-width (and window (window-body-width window t)))
-         (body-height (and window (window-body-height window t)))
-         (char-width (and window (frame-char-width (window-frame window))))
-         (editing (with-current-buffer etaf-telega-gui--buffer
-                    (and (etaf-runtime-for-buffer (current-buffer))
-                         (etaf-text-input-active-p (etaf-runtime-for-buffer (current-buffer)))))))
+         (char-width (and window (frame-char-width (window-frame window)))))
     (and window
-         (or editing (etaf-gui-verifier-canvas-filled-p etaf-telega-gui--buffer))
-         (or editing (<= (car size) body-width))
+         (<= (car size) body-width)
          ;; `window-text-pixel-size' omits trailing whitespace, so a filled
-         ;; canvas may measure up to two character cells short.
-         (or editing (>= (car size) (- body-width (* 2 char-width))))
-         (or editing (<= (cdr size) body-height))
+         ;; row may measure up to two character cells short.
+         (>= (car size) (- body-width (* 2 char-width)))
          (= (window-hscroll window) 0)
          (let ((info (etaf-telega-gui--info)))
            (and (integerp (plist-get info :chats))
@@ -114,8 +121,22 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                               (and runtime (consp bounds))))))))))))
 
 (defun etaf-telega-gui--type (text)
-  "Enter TEXT into the active composer session."
-  (insert text))
+  "Type TEXT into the active composer session through the command loop."
+  (execute-kbd-macro (vconcat text)))
+
+(defun etaf-telega-gui--press (help)
+  "Press the app bar button whose help text is HELP."
+  (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+         (host (cl-find-if (lambda (entry)
+                             (equal (plist-get (cdr entry) :help-echo) help))
+                           (etaf-runtime-host-props-entries runtime))))
+    (unless host (error "No app bar button %S" help))
+    (etaf-dispatch-event runtime (car host) 'press)))
+
+(defun etaf-telega-gui--native-p (command message)
+  "Return non-nil when Telega's COMMAND last ran on MESSAGE of chat 1."
+  (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
+         (list command 1 message)))
 
 (defun etaf-telega-gui-run (directory)
   "Run the offline product workflow and save evidence to DIRECTORY."
@@ -123,54 +144,66 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
          (frame (make-frame '((name . "Telegram / GUI acceptance") (no-focus-on-map . t))))
          (scenario
           (etaf-gui-verifier-scenario-create
-           :name "etaf-telega-product" :claim "Telega-style conversation: selection, reply, edit, live stream"
+           :name "etaf-telega-product"
+           :claim "Single-buffer Telega client: list, chat, media, composer, native keys"
            :initialize
            (lambda (context)
              (select-frame frame) (delete-frame original-frame t)
              (set-frame-size frame 140 44)
+             ;; Emacs 31 (NS) crashes measuring a fallback-font character
+             ;; after an SVG <text> avatar loads on a never-displayed frame.
+             (redisplay t)
              (setq etaf-telega-gui--hold nil)
              (let ((etaf-telega-backend-create-function
                     (lambda () (etaf-telega-gui--backend-create) etaf-telega-gui--backend)))
                (setq etaf-telega-gui--buffer (etaf-telega-open))
-               (with-current-buffer etaf-telega-gui--buffer (etaf-telega-select-chat 1)))
+               (with-current-buffer etaf-telega-gui--buffer (etaf-telega-open-chat 1)))
              (setf (etaf-gui-verifier-context-target-buffer context) etaf-telega-gui--buffer))
            :actions
            (append
             (list
-             (etaf-telega-gui--action "chat-open" #'ignore #'etaf-telega-gui--idle t)
+             (etaf-telega-gui--action
+              "chat-open" #'ignore
+              (lambda (_)
+                (and (etaf-telega-gui--idle nil)
+                     (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)
+                     (with-current-buffer etaf-telega-gui--buffer
+                       (string-search "海边" (buffer-substring-no-properties
+                                              (point-min) (point))))))
+              t)
              (etaf-telega-gui--action
               "chat-back" (lambda (_) (execute-kbd-macro (kbd "q")))
-              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'root)) t)
+              (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :screen) 'root)
+                               (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
+              t)
              (etaf-telega-gui--action
               "filter-groups" (lambda (_) (etaf-telega-select-filter 'groups))
               (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :filter) 'groups)
-                               (string-match-p "工作群" (etaf-telega-gui--text)))))
+                               (string-match-p "工作群" (etaf-telega-gui--text))
+                               (not (string-match-p "每日新闻" (etaf-telega-gui--text))))))
              (etaf-telega-gui--action
               "filter-main" (lambda (_) (etaf-telega-select-filter 'main))
               (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :filter) 'main)
                                (string-match-p "Alice" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
+              "next-chat" (lambda (_) (execute-kbd-macro (kbd "n")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 2)))
+             (etaf-telega-gui--action
+              "previous-chat" (lambda (_) (execute-kbd-macro (kbd "p")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
+             (etaf-telega-gui--action
               "chat-open-again" (lambda (_) (execute-kbd-macro (kbd "RET")))
-              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
+              (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)
+                               (equal (plist-get (etaf-telega-gui--info) :chat) 1))))
              (etaf-telega-gui--action
-              "describe-screen" (lambda (_) (execute-kbd-macro (kbd "t")))
-              (lambda (_)
-                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'describe)
-                     (string-match-p "@alice" (etaf-telega-gui--text)))) t)
-             (etaf-telega-gui--action
-              "describe-back" (lambda (_) (execute-kbd-macro (kbd "q")))
-              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
-             (etaf-telega-gui--action
-              "actions-screen" (lambda (_) (execute-kbd-macro (kbd "o")))
-              (lambda (_)
-                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'actions)
-                     (string-match-p "消息操作" (etaf-telega-gui--text)))) t)
-             (etaf-telega-gui--action
-              "actions-back" (lambda (_) (execute-kbd-macro (kbd "q")))
-              (lambda (_) (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)))
-             (etaf-telega-gui--action
-              "select-previous-message" (lambda (_) (execute-kbd-macro (kbd "p")))
+              "select-older-messages" (lambda (_) (execute-kbd-macro (kbd "p p p")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)) t)
+             (etaf-telega-gui--action
+              "jump-newest" (lambda (_) (execute-kbd-macro (kbd ">")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
+             (etaf-telega-gui--action
+              "native-copy" (lambda (_) (execute-kbd-macro (kbd "p p c")))
+              (lambda (_) (etaf-telega-gui--native-p 'telega-msg-copy-dwim 11)))
              (etaf-telega-gui--action
               "reply" (lambda (_)
                         (execute-kbd-macro (kbd "r"))
@@ -182,48 +215,45 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                 (let ((info (etaf-telega-gui--info)))
                   (and (null (plist-get info :compose))
                        (equal (plist-get info :draft) "")
-                       (string-match-p "↩ Alice：你好" (etaf-telega-gui--text)))))
+                       (string-match-p "Alice *你好\\(.\\|\n\\)*收到，明早见"
+                                       (etaf-telega-gui--text)))))
               t)
              (etaf-telega-gui--action
               "edit" (lambda (_)
-                       (execute-kbd-macro (kbd "e"))
+                       (execute-kbd-macro (kbd "> e"))
                        (unless (eq (plist-get (etaf-telega-gui--info) :compose) 'edit)
                          (error "Edit mode did not arm"))
+                       (execute-kbd-macro (kbd "C-e"))
                        (etaf-telega-gui--type "！")
                        (execute-kbd-macro (kbd "RET")))
               (lambda (_)
                 (and (null (plist-get (etaf-telega-gui--info) :compose))
+                     (string-match-p "收到，明早见！" (etaf-telega-gui--text))
                      (string-match-p "（已编辑）" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
               "cancel-edit-restores-draft"
               (lambda (_)
-                (execute-kbd-macro (kbd "e"))
+                (execute-kbd-macro (kbd "> e"))
                 (etaf-telega-gui--type "不要这个")
                 (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (null (plist-get info :compose))
-                       (equal (plist-get info :draft) ""))))
+                       (equal (plist-get info :draft) "")
+                       (not (string-match-p "不要这个" (etaf-telega-gui--text))))))
               t)
-             (etaf-telega-gui--action
-              "copy" (lambda (_)
-                       (execute-kbd-macro (kbd "p"))
-                       (execute-kbd-macro (kbd "p"))
-                       (execute-kbd-macro (kbd "c")))
-              (lambda (_) (equal (current-kill 0) "你好")))
-             (etaf-telega-gui--action
-              "delete" (lambda (_)
-                         (execute-kbd-macro (kbd "d yes RET")))
-              (lambda (_)
-                (= (plist-get (etaf-telega-gui--info) :messages) 2)))
              (etaf-telega-gui--action
               "live-message-appends"
               (lambda (_)
                 (etaf-telega-backend-fake-deliver
                  etaf-telega-gui--backend
-                 (list :id 99 :sender "Alice" :time "10:02" :date "2026-10-05" :text "好的，明早见")))
+                 (list :id 99 :sender "Alice" :time "10:05" :date "2026-10-05" :text "好的，明早见")))
               (lambda (_) (string-match-p "好的，明早见" (etaf-telega-gui--text)))
               t)
+             (etaf-telega-gui--action
+              "live-message-removed"
+              (lambda (_) (etaf-telega-backend-fake-remove etaf-telega-gui--backend 99))
+              (lambda (_) (not (string-match-p "好的，明早见" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
               "composer-draft" (lambda (_)
                                  (execute-kbd-macro (kbd "i"))
@@ -262,32 +292,13 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                   (error "Editing shows no caret"))
                 (when (buffer-local-value 'truncate-lines etaf-telega-gui--buffer)
                   (error "Editing enabled truncate-lines"))
+                (execute-kbd-macro (kbd "C-j"))
+                (etaf-telega-gui--type "第二行")
                 (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (not (plist-get info :editing))
-                       (equal (plist-get info :draft) "光标"))))
-              t)
-             (etaf-telega-gui--action
-              "composer-click-away-keeps-draft"
-              (lambda (_)
-                (execute-kbd-macro (kbd "i"))
-                (etaf-telega-gui--type "点开")
-                (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
-                       (host (cl-find-if
-                              (lambda (entry)
-                                (and (not (equal (car entry) 'telega-composer))
-                                     (assq 'press (cdr entry))))
-                              (etaf-runtime-handler-entries runtime))))
-                  (unless host (error "No other interactive Host"))
-                  (etaf-dispatch-event runtime (car host) 'press))
-                ;; Return to the original conversation so later actions stay
-                ;; deterministic; the typed draft must survive both.
-                (etaf-telega-select-chat 1))
-              (lambda (_)
-                (let ((info (etaf-telega-gui--info)))
-                  (and (not (plist-get info :editing))
-                       (equal (plist-get info :draft) "光标点开"))))
+                       (equal (plist-get info :draft) "光标\n第二行"))))
               t)
              (etaf-telega-gui--action
               "composer-resize-keeps-editing"
@@ -297,51 +308,47 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                 (set-frame-size frame 120 40)
                 (unless (eq (plist-get (etaf-telega-gui--info) :editing) t)
                   (error "Resize ended the composer session"))
-                ;; Clear the field and keep the empty draft so later actions
-                ;; start from a clean composer.
-                (execute-kbd-macro (kbd "C-a C-k C-c C-k")))
+                (etaf-telega-gui--type "中")
+                (execute-kbd-macro (kbd "C-c C-k")))
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (not (plist-get info :editing))
-                       (equal (plist-get info :draft) ""))))
+                       (equal (plist-get info :draft) "光标\n第二行缩放中"))))
               t)
              (etaf-telega-gui--action
-              "resize-sidebar"
+              "app-bar-back-keeps-draft"
               (lambda (_)
-                (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
-                       (divider
-                        (cl-find-if
-                         (lambda (entry)
-                           (equal (plist-get (cdr entry) :aria-label)
-                                  "Resize columns"))
-                         (etaf-runtime-host-props-entries runtime))))
-                  (unless divider (error "No splitter divider"))
-                  (etaf-dispatch-event runtime (car divider) 'drag
-                                       (list :phase 'move :delta (cons -72 0))
-                                       t)))
+                (execute-kbd-macro (kbd "p p"))
+                (etaf-telega-gui--press "返回会话列表 (q)"))
               (lambda (_)
-                (let ((width (plist-get (etaf-telega-gui--info) :list-width)))
-                  (and (integerp width) (< width 50))))
+                (let ((info (etaf-telega-gui--info)))
+                  (and (eq (plist-get info :screen) 'root)
+                       (equal (plist-get info :cursor) 1))))
               t)
              (etaf-telega-gui--action
-              "next-chat" (lambda (_)
-                            (execute-kbd-macro (kbd "q"))
-                            (execute-kbd-macro (kbd "j")))
+              "native-chat-key" (lambda (_) (execute-kbd-macro (kbd "n P")))
               (lambda (_)
-                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'root)
-                     (equal (plist-get (etaf-telega-gui--info) :cursor) 2))))
+                (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
+                       '(telega-chat-toggle-pin 2 nil))))
              (etaf-telega-gui--action
-              "previous-chat" (lambda (_) (execute-kbd-macro (kbd "k")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
+              "reopen-restores-draft"
+              (lambda (_) (etaf-telega-open-chat 1))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (eq (plist-get info :screen) 'chat)
+                       (equal (plist-get info :draft) "光标\n第二行缩放中")))))
              (etaf-telega-gui--action
-              "last-chat" (lambda (_) (execute-kbd-macro (kbd "M->")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 3)))
-             (etaf-telega-gui--action
-              "first-chat" (lambda (_) (execute-kbd-macro (kbd "M-<")))
-              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
+              "app-bar-jump-newest"
+              (lambda (_)
+                (execute-kbd-macro (kbd "p p p"))
+                (etaf-telega-gui--press "跳到最新消息 (>)"))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
               "reload-history" (lambda (_) (execute-kbd-macro (kbd "g")))
-              (lambda (_) (= (plist-get (etaf-telega-gui--info) :messages) 1))))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (equal (plist-get info :chat) 1)
+                       (< 0 (plist-get info :messages)))))))
             (mapcar
              (lambda (size)
                (etaf-telega-gui--action
@@ -349,7 +356,7 @@ hidden reserve or an over-tall row budget cannot slip through the suite."
                 (lambda (_) (set-frame-size frame (car size) (cadr size)))
                 (lambda (_) (and (= (frame-width frame) (car size))
                                  (= (frame-height frame) (cadr size)))) t))
-             '((120 40) (80 30) (140 44))))
+             '((120 40) (60 30) (200 50) (140 44))))
            :completion (lambda (_) (etaf-telega-gui--idle nil)))))
     (unwind-protect
         (etaf-gui-verifier-run scenario directory)

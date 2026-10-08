@@ -4,10 +4,10 @@
 
 ;;; Commentary:
 ;;
-;; Public behaviour tests.  Every scenario drives the application through the
-;; interfaces declared in `etaf-telega.el' and asserts what a person would see.
-;; The fake backend replays fixed chats and messages; no network is touched.
-;; Keep internals out: no private helpers, structures or call counts.
+;; Public behaviour tests of the single-buffer client.  Every scenario drives
+;; the application through the commands and keys declared in `etaf-telega.el'
+;; and asserts what a person would see or what the backend receives.  The
+;; fake backend replays fixed chats and messages; no network is touched.
 
 ;;; Code:
 
@@ -15,505 +15,443 @@
 (require 'cl-lib)
 (require 'etaf-telega)
 
-(defun etaf-telega-test--backend (&optional responder)
-  "Return a fake backend with two chats and one loaded history."
+(defun etaf-telega-test--histories (&rest entries)
+  "Return a history table from ENTRIES of (CHAT-ID . MESSAGES), newest first."
   (let ((histories (make-hash-table :test #'equal)))
-    ;; Newest first, matching the backend contract and TDLib history order.
-    (puthash 1 (list (list :id 12 :outgoing t :sender "我" :time "10:01" :text "在的")
-                     (list :id 11 :sender "Alice" :time "10:00" :text "你好"))
-             histories)
-    (etaf-telega-backend-fake-create
-     :chats (list (list :id 1 :title "Alice" :unread 2)
-                  (list :id 2 :title "工作群" :unread 0))
-     :histories histories :responder responder)))
+    (dolist (entry entries)
+      (puthash (car entry) (cdr entry) histories))
+    histories))
 
-(defun etaf-telega-test--open (&optional backend)
-  "Open a client with BACKEND, or a fresh fake one."
-  (let ((etaf-telega-backend-create-function
-         (lambda () (or backend (etaf-telega-test--backend)))))
-    (etaf-telega-open)))
+(defun etaf-telega-test--backend (&optional responder histories)
+  "Return a fake backend with three chats and HISTORIES.
+Chat 1 holds two messages unless HISTORIES replaces it.  RESPONDER is the
+fake backend's send responder."
+  (etaf-telega-backend-fake-create
+   :chats (list (list :id 1 :title "Alice" :unread 2 :preview "在的"
+                      :kind 'private :time "10:01")
+                (list :id 2 :title "工作群" :unread 0 :preview "周报"
+                      :kind 'group :time "09:30")
+                (list :id 3 :title "每日新闻" :unread 5 :preview "头条"
+                      :kind 'channel :time "08:00"))
+   :histories (or histories
+                  (etaf-telega-test--histories
+                   (list 1
+                         (list :id 12 :outgoing t :sender "我" :time "10:01"
+                               :text "在的")
+                         (list :id 11 :sender "Alice" :time "10:00"
+                               :text "你好"))))
+   :responder responder))
 
 (defmacro etaf-telega-test--with-client (var backend &rest body)
-  "Open a client in VAR with BACKEND and close it afterwards even on failure."
+  "Open a client in VAR on BACKEND, run BODY in it and always close it."
   (declare (indent 2))
-  `(let ((,var (etaf-telega-test--open ,backend)))
+  `(let* ((backend ,backend)
+          (,var (let ((etaf-telega-backend-create-function (lambda () backend)))
+                  (etaf-telega-open))))
      (unwind-protect
-         (progn ,@body)
-       (when (buffer-live-p ,var)
-         (with-current-buffer ,var (etaf-telega-close))))))
+         (save-window-excursion
+           (switch-to-buffer ,var)
+           ,@body)
+       (etaf-telega-close))))
 
-(defun etaf-telega-test--text (buffer)
-  "Return BUFFER's visible text without properties."
-  (with-current-buffer buffer
-    (buffer-substring-no-properties (point-min) (point-max))))
+(defun etaf-telega-test--keys (keys)
+  "Press KEYS in the client like a person at the keyboard."
+  (execute-kbd-macro (kbd keys)))
 
-(ert-deftest etaf-telega-tests-open-mounts-and-close-releases ()
-  "Opening mounts live chats and closing kills the buffer and backend."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-test--with-client buffer nil
-      (should (buffer-live-p buffer))
-      (should (etaf-runtime-for-buffer buffer))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "Telegram" text))
-        (should (string-match-p "就绪" text))
-        (should (string-match-p "Alice" text))
-        (should (string-match-p "工作群" text)))
-      (should (equal (plist-get (etaf-telega-info buffer) :chats) 2)))
-    (should (eq (etaf-telega-backend-fake-sent backend) nil))))
+(defun etaf-telega-test--text ()
+  "Return the client buffer's text without properties."
+  (buffer-substring-no-properties (point-min) (point-max)))
 
-(ert-deftest etaf-telega-tests-select-chat-loads-history ()
-  "Selecting a chat loads and shows its recent messages."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (let ((text (etaf-telega-test--text buffer)))
-      (should (string-match-p "你好" text))
-      (should (string-match-p "在的" text)))
-    (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))
-    (should (equal (plist-get (etaf-telega-info buffer) :messages) 2))
-    (with-current-buffer buffer
-      (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-        (should (< (string-match-p "你好" text)
-                   (string-match-p "在的" text)))))))
+(defun etaf-telega-test--info (key)
+  "Return the visible client fact KEY."
+  (plist-get (etaf-telega-info) key))
+
+(defun etaf-telega-test--before-point-p (text)
+  "Return non-nil when TEXT appears before point."
+  (string-search text (buffer-substring-no-properties (point-min) (point))))
+
+(ert-deftest etaf-telega-tests-open-lists-chats-and-close-releases ()
+  "Opening shows the account's chats in one buffer; closing kills it."
+  (let (client)
+    (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+      (setq client buffer)
+      (should (eq (etaf-telega-test--info :screen) 'root))
+      (should (equal (etaf-telega-test--info :status) "就绪"))
+      (should (= (etaf-telega-test--info :chats) 3))
+      (let ((text (etaf-telega-test--text)))
+        (dolist (title '("搜索" "Alice" "工作群" "每日新闻" "全部" "群组"))
+          (should (string-search title text)))
+        (should (< (string-search "Alice" text) (string-search "工作群" text)))))
+    (should-not (buffer-live-p client))
+    (should-not (etaf-telega-test--info :buffer))))
+
+(ert-deftest etaf-telega-tests-filter-shows-matching-chats ()
+  "A filter tab narrows the list and the main tab restores it."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-select-filter 'groups)
+    (should (eq (etaf-telega-test--info :filter) 'groups))
+    (let ((text (etaf-telega-test--text)))
+      (should (string-search "工作群" text))
+      (should-not (string-search "每日新闻" text)))
+    (etaf-telega-select-filter 'main)
+    (should (string-search "每日新闻" (etaf-telega-test--text)))))
+
+(ert-deftest etaf-telega-tests-list-keys-move-and-open ()
+  "n and p walk the list and RET opens the conversation under point."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (should (equal (etaf-telega-test--info :cursor) 1))
+    (etaf-telega-test--keys "n")
+    (should (equal (etaf-telega-test--info :cursor) 2))
+    (etaf-telega-test--keys "n")
+    (should (equal (etaf-telega-test--info :cursor) 3))
+    (etaf-telega-test--keys "p")
+    (should (equal (etaf-telega-test--info :cursor) 2))
+    (should (eq (etaf-telega-test--info :screen) 'root))
+    (etaf-telega-test--keys "RET")
+    (should (eq (etaf-telega-test--info :screen) 'chat))
+    (should (equal (etaf-telega-test--info :chat) 2))))
+
+(ert-deftest etaf-telega-tests-open-chat-shows-history-and-lands-on-composer ()
+  "Opening a chat replaces the list with its history, oldest first."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (should (eq (etaf-telega-test--info :screen) 'chat))
+    (should (= (etaf-telega-test--info :messages) 2))
+    (let ((text (etaf-telega-test--text)))
+      (should (string-search "Alice" text))
+      (should-not (string-search "工作群" text))
+      (should (< (string-search "你好" text) (string-search "在的" text))))
+    (should (etaf-telega-test--before-point-p "在的"))
+    (should-not (etaf-telega-test--info :editing))))
+
+(ert-deftest etaf-telega-tests-back-returns-to-the-list ()
+  "q leaves the chat for the list with that conversation under point."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 2)
+    (etaf-telega-test--keys "q")
+    (should (eq (etaf-telega-test--info :screen) 'root))
+    (should (equal (etaf-telega-test--info :cursor) 2))
+    (should (string-search "每日新闻" (etaf-telega-test--text)))
+    (etaf-telega-test--keys "RET")
+    (should (equal (etaf-telega-test--info :chat) 2))))
+
+(ert-deftest etaf-telega-tests-message-keys-walk-history-and-composer ()
+  "p selects older messages and n past the newest returns to the composer."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "p")
+    (should (equal (etaf-telega-test--info :selected) 12))
+    (etaf-telega-test--keys "p")
+    (should (equal (etaf-telega-test--info :selected) 11))
+    (should-not (etaf-telega-test--before-point-p "你好"))
+    (etaf-telega-test--keys "n")
+    (should (equal (etaf-telega-test--info :selected) 12))
+    (etaf-telega-test--keys "n")
+    (should-not (etaf-telega-test--info :selected))
+    (should (etaf-telega-test--before-point-p "在的"))))
+
+(ert-deftest etaf-telega-tests-jump-newest-selects-the-newest-message ()
+  "> shows the newest message from anywhere in the history."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "p p")
+    (should (equal (etaf-telega-test--info :selected) 11))
+    (etaf-telega-test--keys ">")
+    (should (equal (etaf-telega-test--info :selected) 12))))
 
 (ert-deftest etaf-telega-tests-composer-sends-and-clears-on-ack ()
   "Typing in the composer sends the text and clears it after acceptance."
   (let ((backend (etaf-telega-test--backend
-                  (lambda (fake text)
-                    (etaf-telega-backend-fake-complete fake text)))))
+                  (lambda (fake text) (etaf-telega-backend-fake-complete fake text)))))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer
-        (etaf-telega-compose)
-        (should (plist-get (etaf-telega-info buffer) :editing))
-        (insert "今晚见")
-        (call-interactively (key-binding (kbd "RET"))))
-      (should (equal (car (etaf-telega-backend-fake-sent backend)) "今晚见"))
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) ""))
-      (should (string-match-p "今晚见" (etaf-telega-test--text buffer))))))
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i")
+      (should (etaf-telega-test--info :editing))
+      (etaf-telega-test--keys "今晚见")
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-backend-fake-sent backend) '("今晚见")))
+      (should (equal (etaf-telega-test--info :draft) ""))
+      (should (= (etaf-telega-test--info :messages) 3))
+      (let ((text (etaf-telega-test--text)))
+        (should (< (string-search "在的" text) (string-search "今晚见" text)))))))
 
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
-  "A pending send keeps the draft text and clears only after the ack."
+  "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer
-        (etaf-telega-compose)
-        (insert "未确认")
-        (call-interactively (key-binding (kbd "RET"))))
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "未确认"))
+      (etaf-telega-open-chat 1)
+      (etaf-telega-compose)
+      (etaf-telega-test--keys "未确认")
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-test--info :draft) "未确认"))
       (etaf-telega-backend-fake-complete backend "未确认")
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "")))))
+      (should (equal (etaf-telega-test--info :draft) "")))))
 
-(ert-deftest etaf-telega-tests-chat-keys-move-the-selection ()
-  "The chat keys move the list cursor without opening a conversation."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (with-current-buffer buffer (etaf-telega-back))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-next-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :cursor) 2))
-    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'root))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-previous-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :cursor) 1))))
-
-(ert-deftest etaf-telega-tests-live-message-appends-to-the-open-chat ()
-  "A message arriving while a chat is open is appended to its history."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (should (equal (plist-get (etaf-telega-info buffer) :messages) 2))
-      (etaf-telega-backend-fake-deliver
-       backend (list :id 13 :sender "Alice" :time "10:02" :text "晚上见"))
-      (should (equal (plist-get (etaf-telega-info buffer) :messages) 3))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "晚上见" text))
-        (should (< (string-match-p "在的" text)
-                   (string-match-p "晚上见" text)))))))
-
-(ert-deftest etaf-telega-tests-live-message-deduplicates-by-id ()
-  "Delivering the same message twice still shows one copy."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (let ((message (list :id 13 :sender "Alice" :time "10:02" :text "晚上见")))
-        (etaf-telega-backend-fake-deliver backend message)
-        (etaf-telega-backend-fake-deliver backend (copy-tree message)))
-      (should (equal (plist-get (etaf-telega-info buffer) :messages) 3)))))
-
-(ert-deftest etaf-telega-tests-live-copy-of-the-draft-keeps-it-until-ack ()
-  "Another client's copy of the draft text does not clear the draft."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer
-        (etaf-telega-compose)
-        (insert "草稿")
-        (call-interactively (key-binding (kbd "RET"))))
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
-      (etaf-telega-backend-fake-deliver
-       backend (list :id 14 :outgoing t :sender "我" :time "10:03" :text "草稿"))
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
-      (etaf-telega-backend-fake-complete backend "草稿")
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "")))))
-
-(ert-deftest etaf-telega-tests-first-and-last-chat-commands ()
-  "The first/last chat commands jump to the ends of the list."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (with-current-buffer buffer (call-interactively #'etaf-telega-last-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :chat) 2))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-first-chat))
-    (should (equal (plist-get (etaf-telega-info buffer) :chat) 1))))
-
-(ert-deftest etaf-telega-tests-message-keys-move-the-selection ()
-  "The n/p keys move the message selection like Telega's chat buffer."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (should (equal (plist-get (etaf-telega-info buffer) :selected) 12))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-previous-message))
-    (should (equal (plist-get (etaf-telega-info buffer) :selected) 11))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-next-message))
-    (should (equal (plist-get (etaf-telega-info buffer) :selected) 12))))
+(ert-deftest etaf-telega-tests-leaving-the-composer-keeps-the-draft ()
+  "Cancelling plain typing keeps the text as the chat's draft."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "i")
+    (etaf-telega-test--keys "草稿")
+    (etaf-telega-test--keys "C-c C-k")
+    (should-not (etaf-telega-test--info :editing))
+    (should (equal (etaf-telega-test--info :draft) "草稿"))
+    (should (string-search "草稿" (etaf-telega-test--text)))))
 
 (ert-deftest etaf-telega-tests-reply-quotes-the-selected-message ()
-  "r arms a reply; the next send carries the quote and clears the mode."
+  "r arms a reply to the message under point and the sent message quotes it."
   (let ((backend (etaf-telega-test--backend
                   (lambda (fake text) (etaf-telega-backend-fake-complete fake text)))))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer
-        (call-interactively #'etaf-telega-previous-message)
-        (call-interactively #'etaf-telega-reply)
-        (should (eq (plist-get (etaf-telega-info buffer) :compose) 'reply))
-        (insert "收到")
-        (call-interactively (key-binding (kbd "RET"))))
-      (should (equal (cdr (assoc "收到" (etaf-telega-backend-fake-replies backend))) 11))
-      (should (null (plist-get (etaf-telega-info buffer) :compose)))
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) ""))
-      (should (string-match-p "↩ Alice：你好" (etaf-telega-test--text buffer))))))
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "p p r")
+      (should (eq (etaf-telega-test--info :compose) 'reply))
+      (should (string-search "回复 Alice：你好" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "收到")
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-backend-fake-replies backend) '(("收到" . 11))))
+      (should-not (etaf-telega-test--info :compose))
+      (let ((text (etaf-telega-test--text)))
+        (should-not (string-search "回复 Alice" text))
+        (should (string-match-p "Alice[ \n]*你好\\(.\\|\n\\)*收到" text))))))
 
-(ert-deftest etaf-telega-tests-edit-replaces-the-selected-message ()
-  "e prefills the composer; sending replaces the message and marks it edited."
+(ert-deftest etaf-telega-tests-edit-replaces-and-cancel-restores-the-draft ()
+  "e edits an outgoing message; cancelling an edit restores the old draft."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "i")
+    (etaf-telega-test--keys "原草稿")
+    (etaf-telega-test--keys "C-c C-k p e")
+    (should (eq (etaf-telega-test--info :compose) 'edit))
+    (should (equal (etaf-telega-test--info :draft) "在的"))
+    (etaf-telega-test--keys "C-c C-k")
+    (should-not (etaf-telega-test--info :compose))
+    (should (equal (etaf-telega-test--info :draft) "原草稿"))
+    (etaf-telega-test--keys "p e")
+    (etaf-telega-test--keys "C-e ！")
+    (etaf-telega-test--keys "RET")
+    (should-not (etaf-telega-test--info :compose))
+    (should (string-match-p "在的！ +已编辑" (etaf-telega-test--text)))))
+
+(ert-deftest etaf-telega-tests-edit-refuses-incoming-messages ()
+  "Only the account's own messages can be edited."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "p p")
+    (should-error (etaf-telega-edit) :type 'user-error)
+    (should-not (etaf-telega-test--info :compose))))
+
+(ert-deftest etaf-telega-tests-live-changes-update-the-open-chat ()
+  "Arrivals append once, updates replace in place and deletions remove."
   (let ((backend (etaf-telega-test--backend)))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer
-        (call-interactively #'etaf-telega-edit)
-        (should (eq (plist-get (etaf-telega-info buffer) :compose) 'edit))
-        (should (equal (plist-get (etaf-telega-info buffer) :draft) "在的"))
-        (insert "！")
-        (call-interactively (key-binding (kbd "RET"))))
-      (should (null (plist-get (etaf-telega-info buffer) :compose)))
-      (should (equal (plist-get (etaf-telega-backend-fake-message backend 12) :text)
-                     "在的！"))
-      (should (string-match-p "（已编辑）" (etaf-telega-test--text buffer))))))
+      (etaf-telega-open-chat 1)
+      (let ((message (list :id 13 :sender "Alice" :time "10:02" :text "晚上见")))
+        (etaf-telega-backend-fake-deliver backend message)
+        (etaf-telega-backend-fake-deliver backend (copy-tree message)))
+      (should (= (etaf-telega-test--info :messages) 3))
+      (should (< (string-search "在的" (etaf-telega-test--text))
+                 (string-search "晚上见" (etaf-telega-test--text))))
+      (etaf-telega-backend-fake-update
+       backend (list :id 11 :sender "Alice" :time "10:00" :text "你好呀" :edited t))
+      (should (string-match-p "你好呀[ \n]*已编辑 10:00" (etaf-telega-test--text)))
+      (etaf-telega-backend-fake-remove backend 12)
+      (should (= (etaf-telega-test--info :messages) 2))
+      (should-not (string-search "在的" (etaf-telega-test--text))))))
 
-(ert-deftest etaf-telega-tests-cancel-edit-restores-the-draft ()
-  "C-c C-k on an edit restores the draft captured before editing."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (with-current-buffer buffer
-      (etaf-telega-compose)
-      (insert "草稿")
-      (call-interactively (key-binding (kbd "C-c C-k"))))
-    (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))
-    (with-current-buffer buffer
-      (call-interactively #'etaf-telega-edit)
-      (should (equal (plist-get (etaf-telega-info buffer) :draft) "在的"))
-      (insert "！")
-      (call-interactively (key-binding (kbd "C-c C-k"))))
-    (should (null (plist-get (etaf-telega-info buffer) :compose)))
-    (should (equal (plist-get (etaf-telega-info buffer) :draft) "草稿"))))
+(ert-deftest etaf-telega-tests-load-more-prepends-older-pages ()
+  "Older pages load above the history until the chat's first message."
+  (let ((backend (etaf-telega-test--backend
+                  nil
+                  (etaf-telega-test--histories
+                   (cons 1 (cl-loop for id from 15 downto 11
+                                    collect (list :id id :sender "Alice"
+                                                  :time "10:00"
+                                                  :text (format "第%d条" id))))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (cl-loop repeat 5 until (etaf-telega-test--info :history-end)
+               do (etaf-telega-load-more))
+      (should (etaf-telega-test--info :history-end))
+      (should (= (etaf-telega-test--info :messages) 5))
+      (let ((text (etaf-telega-test--text)))
+        (should (< (string-search "第11条" text) (string-search "第13条" text)
+                   (string-search "第15条" text)))))))
 
-(ert-deftest etaf-telega-tests-delete-removes-the-selected-message ()
-  "d deletes the selected message and moves the selection."
+(ert-deftest etaf-telega-tests-day-separators-label-each-date ()
+  "Each new date opens with a day label; today reads as 今天."
+  (let ((today (format-time-string "%Y-%m-%d")))
+    (etaf-telega-test--with-client buffer
+        (etaf-telega-test--backend
+         nil (etaf-telega-test--histories
+              (list 1 (list :id 12 :sender "Alice" :date today :time "09:00" :text "早")
+                    (list :id 11 :sender "Alice" :date "2020-01-02" :time "22:00"
+                          :text "晚安"))))
+      (etaf-telega-open-chat 1)
+      (let ((text (etaf-telega-test--text)))
+        (should (< (string-search "2020-01-02" text) (string-search "晚安" text)
+                   (string-search "今天" text) (string-search "早" text)))))))
+
+(ert-deftest etaf-telega-tests-activate-opens-media-or-composes ()
+  "RET on a media message opens it through Telega; elsewhere it composes."
+  (let ((backend (etaf-telega-test--backend
+                  nil (etaf-telega-test--histories
+                       (list 1 (list :id 12 :sender "Alice" :time "10:01" :text "看看"
+                                     :kind 'photo)
+                             (list :id 11 :sender "Alice" :time "10:00" :text "你好"))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (should (string-search "看看" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "p RET")
+      (should (equal (cdr (car (etaf-telega-backend-fake-natives backend))) '(1 12)))
+      (should-not (etaf-telega-test--info :editing))
+      (etaf-telega-test--keys "p RET")
+      (should (= (length (etaf-telega-backend-fake-natives backend)) 1))
+      (should (etaf-telega-test--info :editing)))))
+
+(defun etaf-telega-test--image ()
+  "Return a temporary SVG file standing in for downloaded media."
+  (let ((file (make-temp-file "etaf-telega-test" nil ".svg")))
+    (with-temp-file file
+      (insert "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='3'>"
+              "<rect width='4' height='3' fill='red'/></svg>"))
+    file))
+
+(ert-deftest etaf-telega-tests-viewer-pages-and-closes-in-the-buffer ()
+  "RET on a photo opens the in-buffer viewer; n and p page; q closes it."
+  (let* ((image (etaf-telega-test--image))
+         (media (list :src image :width 4 :height 3))
+         (backend (etaf-telega-test--backend
+                   nil (etaf-telega-test--histories
+                        (list 1 (list :id 12 :sender "Alice" :time "10:01"
+                                      :text "第二张" :kind 'photo :media media)
+                              (list :id 11 :sender "Alice" :time "10:00"
+                                    :text "第一张" :kind 'photo :media media))))))
+    (unwind-protect
+        (etaf-telega-test--with-client buffer backend
+          (etaf-telega-open-chat 1)
+          (etaf-telega-test--keys "p RET")
+          (should (equal (etaf-telega-test--info :viewer) 12))
+          (should-not (etaf-telega-backend-fake-natives backend))
+          (etaf-telega-test--keys "p")
+          (should (equal (etaf-telega-test--info :viewer) 11))
+          (etaf-telega-test--keys "n")
+          (should (equal (etaf-telega-test--info :viewer) 12))
+          (etaf-telega-test--keys "q")
+          (should-not (etaf-telega-test--info :viewer))
+          (should (eq (etaf-telega-test--info :screen) 'chat)))
+      (delete-file image))))
+
+(ert-deftest etaf-telega-tests-react-toggles-a-visible-reaction ()
+  "Reacting shows the emoji and its count; reacting again removes it."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (should-not (string-search "👍" (etaf-telega-test--text)))
+    (etaf-telega-react 11 "👍")
+    (should (string-search "👍" (etaf-telega-test--text)))
+    (etaf-telega-react 11 "👍")
+    (should-not (string-search "👍" (etaf-telega-test--text)))))
+
+(ert-deftest etaf-telega-tests-own-messages-align-with-everyone-else ()
+  "Outgoing and incoming messages start in the same column."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (cl-flet ((column (text)
+                (save-excursion
+                  (goto-char (point-min))
+                  (search-forward text)
+                  (- (current-column) (length text)))))
+      (should (= (column "你好") (column "在的"))))))
+
+(ert-deftest etaf-telega-tests-swipes-go-back-and-change-filters ()
+  "Swiping right leaves a chat; swiping on the list changes the filter."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-swipe 'right)
+    (should (eq (etaf-telega-test--info :screen) 'root))
+    (let ((filter (etaf-telega-test--info :filter)))
+      (etaf-telega-swipe 'left)
+      (should-not (equal (etaf-telega-test--info :filter) filter))
+      (etaf-telega-swipe 'right)
+      (should (equal (etaf-telega-test--info :filter) filter)))))
+
+(ert-deftest etaf-telega-tests-printing-keys-never-edit-the-history ()
+  "Unbound printing keys on a message leave the history text unchanged."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "p")
+    (let ((before (etaf-telega-test--text)))
+      (etaf-telega-test--keys "z")
+      (should (equal (etaf-telega-test--text) before))
+      (should-not (etaf-telega-test--info :editing)))))
+
+(ert-deftest etaf-telega-tests-telega-keys-run-native-commands ()
+  "Telega's own keys run Telega's commands on the chat or message at point."
   (let ((backend (etaf-telega-test--backend)))
     (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-        (with-current-buffer buffer (call-interactively #'etaf-telega-delete)))
-      (should (equal (plist-get (etaf-telega-info buffer) :messages) 1))
-      (should (equal (plist-get (etaf-telega-info buffer) :selected) 11))
-      (should-not (etaf-telega-backend-fake-message backend 12)))))
+      (etaf-telega-test--keys "n P")
+      (should (equal (car (etaf-telega-backend-fake-natives backend))
+                     '(telega-chat-toggle-pin 2 nil)))
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "p c")
+      (should (equal (car (etaf-telega-backend-fake-natives backend))
+                     '(telega-msg-copy-dwim 1 12))))))
 
-(ert-deftest etaf-telega-tests-copy-yanks-the-selected-message ()
-  "c copies the selected message's text to the kill ring."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (with-current-buffer buffer (call-interactively #'etaf-telega-copy))
-    (should (equal (current-kill 0) "在的"))))
+(ert-deftest etaf-telega-tests-theme-switch-repaints-the-client ()
+  "Toggling the theme swaps the palette and keeps the open chat."
+  (let ((etaf-telega-theme 'dark))
+    (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+      (etaf-telega-open-chat 1)
+      (let ((dark (etaf-telega-color :bg)))
+        (etaf-telega-toggle-theme)
+        (should (eq etaf-telega-theme 'light))
+        (should-not (equal dark (etaf-telega-color :bg)))
+        (should (eq (etaf-telega-test--info :screen) 'chat))
+        (should (string-search "在的" (etaf-telega-test--text)))))))
 
-(ert-deftest etaf-telega-tests-sidebar-viewport-follows-the-chat-selection ()
-  "A long chat list renders only the rows around the selection."
-  (let* ((chats (cl-loop for n from 1 to 60
-                         collect (list :id n :title (format "对话 %03d" n) :unread 0)))
-         (backend (etaf-telega-backend-fake-create
-                   :chats chats :histories (make-hash-table :test #'equal))))
-    (etaf-telega-test--with-client buffer backend
-      (with-current-buffer buffer (etaf-telega-back))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "对话 001" text))
-        (should-not (string-match-p "对话 060" text)))
-      (dotimes (_ 30)
-        (with-current-buffer buffer (call-interactively #'etaf-telega-next-chat)))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "对话 031" text))
-        (should-not (string-match-p "对话 001" text))
-        (should-not (string-match-p "对话 060" text)))
-      (with-current-buffer buffer (call-interactively #'etaf-telega-return))
-      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat)))))
+(ert-deftest etaf-telega-tests-search-finds-opens-and-remembers-chats ()
+  "/ searches the list; RET opens the first match, which becomes recent."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-test--keys "/")
+    (should (equal (etaf-telega-test--info :search) ""))
+    (should (string-search "常用联系人" (etaf-telega-test--text)))
+    (etaf-telega-test--keys "工作")
+    (should (equal (etaf-telega-test--info :search) "工作"))
+    (let ((text (etaf-telega-test--text)))
+      (should (string-search "工作群" text))
+      (should-not (string-search "每日新闻" text)))
+    (etaf-telega-test--keys "RET")
+    (should (eq (etaf-telega-test--info :screen) 'chat))
+    (should (equal (etaf-telega-test--info :chat) 2))
+    (should-not (etaf-telega-test--info :search))
+    (etaf-telega-test--keys "q /")
+    (let ((text (etaf-telega-test--text)))
+      (should (string-match-p "最近\\(.\\|\n\\)*工作群" text)))
+    (etaf-telega-search-clear-recent)
+    (should (string-search "打开的搜索结果会列在这里" (etaf-telega-test--text)))
+    (etaf-telega-search-exit)
+    (should-not (etaf-telega-test--info :search))
+    (should (string-search "每日新闻" (etaf-telega-test--text)))))
 
-(ert-deftest etaf-telega-tests-describe-screen-shows-the-profile ()
-  "t shows the conversation profile and its actions stay on the screen."
-  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private
-                            :username "alice" :members 0 :description "测试简介"
-                            :pinned t :muted nil)))
-         (backend (etaf-telega-backend-fake-create
-                   :chats chats :histories (make-hash-table :test #'equal))))
-    (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (with-current-buffer buffer (call-interactively #'etaf-telega-describe))
-      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'describe))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "Alice" text))
-        (should (string-match-p "@alice" text))
-        (should (string-match-p "测试简介" text)))
-      (with-current-buffer buffer (call-interactively #'etaf-telega-toggle-mute))
-      (should (eq (plist-get (car (etaf-telega-backend-fake-chats backend)) :muted) t))
-      (with-current-buffer buffer (call-interactively #'etaf-telega-back))
-      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat)))))
-
-(ert-deftest etaf-telega-tests-message-actions-menu ()
-  "o opens the action menu for the selected message."
-  (etaf-telega-test--with-client buffer nil
-    (etaf-telega-select-chat 1)
-    (with-current-buffer buffer (call-interactively #'etaf-telega-actions))
-    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'actions))
-    (let ((text (etaf-telega-test--text buffer)))
-      (should (string-match-p "消息操作" text))
-      (should (string-match-p "回复" text))
-      (should (string-match-p "删除" text)))
-    (with-current-buffer buffer (call-interactively #'etaf-telega-back))
-    (should (eq (plist-get (etaf-telega-info buffer) :screen) 'chat))))
-
-(ert-deftest etaf-telega-tests-media-and-link-messages-show-extras ()
-  "Media and link messages carry placeholder lines."
-  (let* ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 12 :sender "Alice" :time "10:01" :kind 'photo :text "")
-                     (list :id 11 :sender "Alice" :time "10:00"
-                           :link (list :site "Example" :title "标题") :text "看这个"))
-             histories)
-    (let ((backend (etaf-telega-backend-fake-create
-                    :chats (list (list :id 1 :title "Alice" :unread 0))
-                    :histories histories)))
-      (etaf-telega-test--with-client buffer backend
-        (etaf-telega-select-chat 1)
-        (let ((text (etaf-telega-test--text buffer)))
-          (should (string-match-p "\[图片\]" text))
-          (should (string-match-p "链接 Example：标题" text)))))))
-
-(ert-deftest etaf-telega-tests-important-and-online-filters ()
-  "The importance and online filters narrow the chat list."
-  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private :online t)
-                      (list :id 2 :title "工作群" :unread 0 :kind 'group :mention 3)
-                      (list :id 3 :title "新闻频道" :unread 5 :kind 'channel)))
-         (backend (etaf-telega-backend-fake-create
-                   :chats chats :histories (make-hash-table :test #'equal))))
-    (etaf-telega-test--with-client buffer backend
-      (with-current-buffer buffer (etaf-telega-select-filter 'important))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "工作群" text))
-        (should-not (string-match-p "Alice" text)))
-      (with-current-buffer buffer (etaf-telega-select-filter 'online))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "Alice" text))
-        (should-not (string-match-p "新闻频道" text))))))
-
-(ert-deftest etaf-telega-tests-filter-tabs-switch-the-list ()
-  "Filter tabs narrow the chat list inside the one client buffer."
-  (let* ((chats (list (list :id 1 :title "Alice" :unread 2 :kind 'private)
-                      (list :id 2 :title "工作群" :unread 0 :kind 'group)
-                      (list :id 3 :title "新闻频道" :unread 5 :kind 'channel)
-                      (list :id 4 :title "旧群" :unread 0 :kind 'group :archived t)))
-         (backend (etaf-telega-backend-fake-create
-                   :chats chats :histories (make-hash-table :test #'equal))))
-    (etaf-telega-test--with-client buffer backend
-      (with-current-buffer buffer (etaf-telega-select-filter 'groups))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "工作群" text))
-        (should-not (string-match-p "Alice" text))
-        (should-not (string-match-p "新闻频道" text)))
-      (should (equal (plist-get (etaf-telega-info buffer) :filter) 'groups))
-      (should (eq (plist-get (etaf-telega-info buffer) :screen) 'root))
-      (with-current-buffer buffer (etaf-telega-select-filter 'channels))
-      (should (string-match-p "新闻频道" (etaf-telega-test--text buffer)))
-      (with-current-buffer buffer (etaf-telega-select-filter 'archived))
-      (should (string-match-p "旧群" (etaf-telega-test--text buffer)))
-      (with-current-buffer buffer (etaf-telega-select-filter 'main))
-      (let ((text (etaf-telega-test--text buffer)))
-        (should (string-match-p "Alice" text))
-        (should-not (string-match-p "旧群" text))))))
-
-(ert-deftest etaf-telega-tests-viewport-scrolls-and-pages-the-history ()
-  "The pane shows the newest rows, follows, scrolls and pages at the top."
-  (let* ((histories (make-hash-table :test #'equal))
-         (all (cl-loop for n from 30 downto 1
-                       collect (list :id n :sender "Alice" :time "10:00"
-                                     :text (format "第 %d 条" n)))))
-    (puthash 1 all histories)
-    (let ((backend (etaf-telega-backend-fake-create
-                    :chats (list (list :id 1 :title "Alice" :unread 0))
-                    :histories histories)))
-      (etaf-telega-test--with-client buffer backend
-        (etaf-telega-select-chat 1)
-        ;; One backend page carries two messages; filling loads enough pages
-        ;; for the pane and keeps the newest rows visible.
-        (should (> (plist-get (etaf-telega-info buffer) :messages) 2))
-        (let ((text (etaf-telega-test--text buffer)))
-          (should (string-match-p "第 30 条" text))
-          (should-not (string-match-p "第 1 条" text)))
-        ;; Walking the selection to an older message scrolls it into view.
-        (dotimes (_ 11)
-          (with-current-buffer buffer (call-interactively #'etaf-telega-previous-message)))
-        (should (string-match-p "第 19 条" (etaf-telega-test--text buffer)))
-        ;; Paging at the top keeps loading older pages, and following
-        ;; returns to the newest rows.
-        (let ((loaded (plist-get (etaf-telega-info buffer) :messages)))
-          (dotimes (_ 20)
-            (with-current-buffer buffer (call-interactively #'etaf-telega-page-up)))
-          (should (> (plist-get (etaf-telega-info buffer) :messages) loaded)))
-        (with-current-buffer buffer (call-interactively #'etaf-telega-follow))
-        (should (string-match-p "第 30 条" (etaf-telega-test--text buffer)))))))
-
-(ert-deftest etaf-telega-tests-day-separators-group-messages ()
-  "Messages from different days carry their day labels."
-  (let* ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (list (list :id 13 :sender "Alice" :time "10:02" :date "2026-10-05" :text "今天")
-                     (list :id 12 :sender "Alice" :time "10:01" :date "2026-10-04" :text "昨天")
-                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "前天"))
-             histories)
-    (let ((backend (etaf-telega-backend-fake-create
-                    :chats (list (list :id 1 :title "Alice" :unread 0))
-                    :histories histories)))
-      (etaf-telega-test--with-client buffer backend
-        (etaf-telega-select-chat 1)
-        (let ((text (etaf-telega-test--text buffer)))
-          (should (string-match-p "2026-10-04" text))
-          (should (string-match-p "2026-10-05" text))
-          (should (string-match-p "昨天" text)))
-        (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
-        (should (string-match-p "前天" (etaf-telega-test--text buffer)))))))
-
-(ert-deftest etaf-telega-tests-load-more-prepends-older-history ()
-  "Loading an older page prepends it and keeps the selection."
-  (let* ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (cl-loop for n from 40 downto 1
-                        collect (list :id n :sender "Alice" :time "10:00"
-                                      :text (format "第 %d 条" n)))
-             histories)
-    (let ((backend (etaf-telega-backend-fake-create
-                    :chats (list (list :id 1 :title "Alice" :unread 0))
-                    :histories histories)))
-      (etaf-telega-test--with-client buffer backend
-        (etaf-telega-select-chat 1)
-        (let ((loaded (plist-get (etaf-telega-info buffer) :messages))
-              (selected (plist-get (etaf-telega-info buffer) :selected)))
-          (should (equal selected 40))
-          (with-current-buffer buffer (call-interactively #'etaf-telega-load-more))
-          (should (> (plist-get (etaf-telega-info buffer) :messages) loaded))
-          (should (equal (plist-get (etaf-telega-info buffer) :selected) selected))
-          (should (string-match-p "第 40 条" (etaf-telega-test--text buffer))))))))
-
-(ert-deftest etaf-telega-tests-open-fills-history-and-reload-keeps-it ()
-  "Opening a chat fills the pane from older pages; a reload keeps them."
-  (let* ((histories (make-hash-table :test #'equal)))
-    (puthash 1 (cl-loop for n from 24 downto 1
-                        collect (list :id n :sender "Alice" :time "10:00"
-                                      :text (format "第 %d 条" n)))
-             histories)
-    (let ((backend (etaf-telega-backend-fake-create
-                    :chats (list (list :id 1 :title "Alice" :unread 0))
-                    :histories histories)))
-      (etaf-telega-test--with-client buffer backend
-        (etaf-telega-select-chat 1)
-        (let ((filled (plist-get (etaf-telega-info buffer) :messages)))
-          ;; One backend page carries two messages: stopping at the first page
-          ;; would leave the conversation almost empty.
-          (should (> filled 2))
-          (with-current-buffer buffer (call-interactively #'etaf-telega-reload-chat))
-          (should (>= (plist-get (etaf-telega-info buffer) :messages) filled))
-          (should (string-match-p "第 24 条" (etaf-telega-test--text buffer))))))))
-
-(ert-deftest etaf-telega-tests-splitter-drag-resizes-the-column ()
-  "Dragging the wide layout divider stores a wider conversation column."
-  (let ((backend (etaf-telega-test--backend))
-        (etaf-telega-split-threshold 40))
-    (etaf-telega-test--with-client buffer backend
-      (etaf-telega-select-chat 1)
-      (let* ((runtime (etaf-runtime-for-buffer buffer))
-             (divider
-              (cl-find-if
-               (lambda (entry)
-                 (equal (plist-get (cdr entry) :aria-label) "Resize columns"))
-               (etaf-runtime-host-props-entries runtime))))
-        (should divider)
-        (let ((before (plist-get (etaf-telega-info buffer) :list-width)))
-          (should (integerp before))
-          ;; The width is clamped so the message pane keeps its minimum; at the
-          ;; narrow test window a leftward drag proves the stored width moves.
-          (etaf-dispatch-event runtime (car divider) 'drag
-                               (list :phase 'move
-                                     :delta (cons (- (frame-char-width)) 0))
-                               t)
-          (should (< (plist-get (etaf-telega-info buffer) :list-width) before))
-          ;; The message pane takes the remaining width and stays renderable.
-          (should (string-match-p "Alice" (etaf-telega-test--text buffer))))))))
-
-(ert-deftest etaf-telega-tests-chat-list-scrolls-without-moving-the-cursor ()
-  "Scrolling the conversation column shows later chats; the cursor stays."
-  (let* ((chats (cl-loop for n from 1 to 60
-                         collect (list :id n :title (format "对话 %02d" n)
-                                       :unread 0)))
-         (backend (etaf-telega-backend-fake-create
-                   :chats chats :histories (make-hash-table :test #'equal))))
-    (etaf-telega-test--with-client buffer backend
-      (should (string-match-p "对话 01" (etaf-telega-test--text buffer)))
-      (let ((cursor (plist-get (etaf-telega-info buffer) :cursor)))
-        (with-current-buffer buffer (etaf-telega-scroll-chats 30))
-        (should (equal (plist-get (etaf-telega-info buffer) :cursor) cursor))
-        (should-not (string-match-p "对话 01" (etaf-telega-test--text buffer)))
-        (should (string-match-p "对话 3[0-9]" (etaf-telega-test--text buffer)))))))
-
-(ert-deftest etaf-telega-tests-opening-a-chat-reads-its-newest-page ()
-  "Opening a chat accepts its newest page as read, like Telega's chatbuf."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-test--with-client buffer backend
-      (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 2))
-      (etaf-telega-select-chat 1)
-      (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 0)))))
-
-(ert-deftest etaf-telega-tests-chat-actions-update-the-stored-chat ()
-  "The backend chat actions set read and toggle pin and mute."
-  (let ((backend (etaf-telega-test--backend)))
-    (etaf-telega-backend-chat-action backend 1 'pin)
-    (should (eq t (plist-get (car (etaf-telega-backend-fake-chats backend)) :pinned)))
-    (etaf-telega-backend-chat-action backend 1 'mute)
-    (should (eq t (plist-get (car (etaf-telega-backend-fake-chats backend)) :muted)))
-    (etaf-telega-backend-chat-action backend 1 'read)
-    (should (equal (plist-get (car (etaf-telega-backend-fake-chats backend)) :unread) 0))))
+(ert-deftest etaf-telega-tests-chat-search-and-details-pane ()
+  "/ in a chat narrows the history; C-c i shows and hides the details."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "C-c C-k /")
+    (should (equal (etaf-telega-test--info :chat-search) ""))
+    (etaf-telega-test--keys "你好")
+    (let ((text (etaf-telega-test--text)))
+      (should (string-search "你好" text))
+      (should-not (string-search "在的" text)))
+    (etaf-telega-chat-search-exit)
+    (should-not (etaf-telega-test--info :chat-search))
+    (should (string-search "在的" (etaf-telega-test--text)))
+    (should-not (etaf-telega-test--info :details))
+    (etaf-telega-test--keys "C-c i")
+    (should (etaf-telega-test--info :details))
+    (should (string-search "对话信息" (etaf-telega-test--text)))
+    (etaf-telega-test--keys "C-c i")
+    (should-not (etaf-telega-test--info :details))))
 
 (provide 'etaf-telega-tests)
-(ert-deftest etaf-telega-tests-theme-selection-drives-the-palette ()
-  "Pinning a theme changes the colors the views read, and the toggle flips it."
-  (let ((etaf-telega-theme 'dark))
-    (should (equal (etaf-telega-color :bg) "#0d1117"))
-    (should (equal (etaf-telega-color :ink) "#e6edf3"))
-    (let ((dark-sender (etaf-telega-sender-color "Alice")))
-      (setq etaf-telega-theme 'light)
-      (should (equal (etaf-telega-color :bg) "#ffffff"))
-      (should-not (equal (etaf-telega-color :ink) "#e6edf3"))
-      (should-not (equal (etaf-telega-sender-color "Alice") dark-sender))))
-  (let ((etaf-telega-theme 'light))
-    (call-interactively #'etaf-telega-toggle-theme)
-    (should (eq etaf-telega-theme 'dark))))
-
 ;;; etaf-telega-tests.el ends here

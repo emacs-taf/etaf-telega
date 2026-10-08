@@ -21,15 +21,17 @@
                   (list :id 2 :title "工作群" :unread 0))
      :histories histories)))
 
-(defun etaf-telega-benchmark--open (backend)
-  "Open the client over BACKEND with its whole fixture history loaded.
+(defun etaf-telega-benchmark--open (backend &optional list-only)
+  "Open the client over BACKEND with chat 1's whole fixture history loaded.
 The fake backend pages its history, so the setup loads every page before
-measurement; only the paint work of the scenario stays in the samples."
+measurement; only the paint work of the scenario stays in the samples.  With
+LIST-ONLY the client stays on the conversation list."
   (let ((etaf-telega-backend-create-function (lambda () backend)))
     (let ((buffer (etaf-telega-open)))
-      (with-current-buffer buffer
-        (etaf-telega-select-chat 1)
-        (dotimes (_ 30) (etaf-telega-load-more)))
+      (unless list-only
+        (with-current-buffer buffer
+          (etaf-telega-open-chat 1)
+          (dotimes (_ 30) (etaf-telega-load-more))))
       buffer)))
 
 (defun etaf-telega-benchmark--cleanup (buffer)
@@ -64,9 +66,9 @@ measurement; only the paint work of the scenario stays in the samples."
            :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
 
 (taf-benchmark-register
- "telega.chat.list" :version 1 :modes '(batch gui) :budget-ms 60
+ "telega.chat.list" :version 2 :modes '(batch gui) :budget-ms 60
  :impact 'local :isolation 'series
- :description "Repaint the sidebar while walking a 150-chat list"
+ :description "Move the cursor through a 150-chat conversation list"
  :setup
  (lambda (_mode)
    (let* ((chats (cl-loop for n from 1 to 150
@@ -74,23 +76,28 @@ measurement; only the paint work of the scenario stays in the samples."
                                         :unread 0 :preview "预览文本" :time "10:00")))
           (backend (etaf-telega-backend-fake-create
                     :chats chats :histories (make-hash-table :test #'equal)))
-          (buffer (etaf-telega-benchmark--open backend)))
+          (buffer (etaf-telega-benchmark--open backend t)))
+     ;; Start inside the list so the pinned app bar is already shown and every
+     ;; sample walks with the same window body.
+     (with-current-buffer buffer (dotimes (_ 20) (etaf-telega-next-chat)))
      (list :buffer buffer
            :ready (lambda ()
                     (with-current-buffer buffer
                       (equal (plist-get (etaf-telega-info) :chats) 150)))
            :invoke (lambda (sample)
                      (with-current-buffer buffer
-                       (etaf-telega-select-chat (1+ (% sample 150)))
+                       (if (< (% sample 200) 100)
+                           (etaf-telega-next-chat)
+                         (etaf-telega-previous-chat))
                        (redisplay t)))
            :verify (lambda ()
                      (with-current-buffer buffer
-                       (if (plist-get (etaf-telega-info) :chat)
-                           t "no chat selected")))
+                       (if (integerp (plist-get (etaf-telega-info) :cursor))
+                           t "no conversation under the cursor")))
            :cleanup (lambda () (etaf-telega-benchmark--cleanup buffer))))))
 
 (taf-benchmark-register
- "telega.chat.select" :version 1 :modes '(batch gui) :budget-ms 80
+ "telega.chat.select" :version 2 :modes '(batch gui) :budget-ms 80
  :impact 'local :isolation 'series
  :description "Switch conversations and republish each loaded history"
  :setup
@@ -103,7 +110,7 @@ measurement; only the paint work of the scenario stays in the samples."
                       (member (plist-get (etaf-telega-info) :chat) '(1 2))))
            :invoke (lambda (sample)
                      (with-current-buffer buffer
-                       (etaf-telega-select-chat (if (= (% sample 2) 0) 1 2))
+                       (etaf-telega-open-chat (if (= (% sample 2) 0) 1 2))
                        (redisplay t)))
            :verify (lambda ()
                      (with-current-buffer buffer

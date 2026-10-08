@@ -9,13 +9,21 @@
 ;; Chats and messages are plain plists so a backend can replace a record
 ;; without depending on any mutable object identity.
 ;;
-;; Besides status, chats, history and the draft, the model holds what Telega
-;; keeps in point and its input prompt: the selected message and the composer's
-;; compose state, which is either a reply to, or an edit of, one message.
+;; Besides status, chats, history, the draft and the shown screen (the
+;; conversation list `root' or the open `chat'), the model mirrors what Telega
+;; keeps in point and its input prompt: the conversation and message under
+;; point (`:cursor', `:selected') and the composer's compose state, which is
+;; either a reply to, or an edit of, one message.
+;;
+;; The shell's own presentation state lives here too: the list search (its
+;; query, whether search is shown, the kind tab and the recently opened
+;; results), the in-chat message search, the details pane switch and the
+;; list pane width the reader dragged.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'etaf)
 
 (defun etaf-telega-model ()
@@ -27,14 +35,26 @@
         :messages (etaf-ref nil :name 'etaf-telega-messages)
         :selected (etaf-ref nil :name 'etaf-telega-selected)
         :compose (etaf-ref nil :name 'etaf-telega-compose)
-        :scroll (etaf-ref 0 :name 'etaf-telega-scroll)
-        :chat-scroll (etaf-ref 0 :name 'etaf-telega-chat-scroll)
-        :list-width (etaf-ref nil :name 'etaf-telega-list-width)
         :cursor (etaf-ref nil :name 'etaf-telega-cursor)
-        :screen (etaf-ref 'root :name 'etaf-telega-screen)
-        :describe (etaf-ref nil :name 'etaf-telega-describe)
         :filter (etaf-ref 'main :name 'etaf-telega-filter)
-        :draft (etaf-ref "" :name 'etaf-telega-draft)))
+        :draft (etaf-ref "" :name 'etaf-telega-draft)
+        :screen (etaf-ref 'root :name 'etaf-telega-screen)
+        :viewer (etaf-ref nil :name 'etaf-telega-viewer)
+        :search (etaf-ref "" :name 'etaf-telega-search)
+        :searching (etaf-ref nil :name 'etaf-telega-searching)
+        :search-kind (etaf-ref 'all :name 'etaf-telega-search-kind)
+        :recent (etaf-ref nil :name 'etaf-telega-recent)
+        :chat-search (etaf-ref nil :name 'etaf-telega-chat-search)
+        :details (etaf-ref nil :name 'etaf-telega-details)
+        :list-width (etaf-ref nil :name 'etaf-telega-list-width)))
+
+(defun etaf-telega-model-screen (model)
+  "Return MODEL's shown screen, `root' or `chat'."
+  (etaf-value (plist-get model :screen)))
+
+(defun etaf-telega-model-set-screen (model screen)
+  "Show SCREEN, `root' or `chat', in MODEL."
+  (setf (etaf-value (plist-get model :screen)) screen))
 
 (defun etaf-telega-model-status (model)
   "Return MODEL's connection status."
@@ -68,31 +88,6 @@
   "Return MODEL's compose state, a plist with `:kind' and `:target'."
   (etaf-value (plist-get model :compose)))
 
-(defun etaf-telega-model-scroll (model)
-  "Return MODEL's message viewport offset, in display rows above the newest."
-  (or (etaf-value (plist-get model :scroll)) 0))
-
-(defun etaf-telega-model-set-scroll (model offset)
-  "Set MODEL's viewport OFFSET, in display rows above the newest."
-  (setf (etaf-value (plist-get model :scroll)) (max 0 (or offset 0))))
-
-(defun etaf-telega-model-chat-scroll (model)
-  "Return MODEL's chat list offset, the first visible chat index."
-  (or (etaf-value (plist-get model :chat-scroll)) 0))
-
-(defun etaf-telega-model-list-width (model)
-  "Return MODEL's conversation-column width in cells, or nil for the default."
-  (etaf-value (plist-get model :list-width)))
-
-(defun etaf-telega-model-set-list-width (model width)
-  "Set MODEL's conversation-column width to WIDTH cells, or nil for the default."
-  (setf (etaf-value (plist-get model :list-width))
-        (and width (max 1 (round width)))))
-
-(defun etaf-telega-model-set-chat-scroll (model offset)
-  "Set MODEL's chat list OFFSET, the first visible chat index."
-  (setf (etaf-value (plist-get model :chat-scroll)) (max 0 (or offset 0))))
-
 (defun etaf-telega-model-cursor (model)
   "Return MODEL's selected conversation id in the chat list."
   (etaf-value (plist-get model :cursor)))
@@ -100,22 +95,6 @@
 (defun etaf-telega-model-set-cursor (model id)
   "Select the conversation with ID in MODEL's chat list."
   (setf (etaf-value (plist-get model :cursor)) id))
-
-(defun etaf-telega-model-screen (model)
-  "Return MODEL's current screen, `root' or `chat'."
-  (or (etaf-value (plist-get model :screen)) 'root))
-
-(defun etaf-telega-model-set-screen (model screen)
-  "Switch MODEL to SCREEN, `root' or `chat'."
-  (setf (etaf-value (plist-get model :screen)) screen))
-
-(defun etaf-telega-model-describe (model)
-  "Return MODEL's chat profile, or nil."
-  (etaf-value (plist-get model :describe)))
-
-(defun etaf-telega-model-set-describe (model describe)
-  "Set MODEL's chat profile to DESCRIBE."
-  (setf (etaf-value (plist-get model :describe)) describe))
 
 (defun etaf-telega-model-filter (model)
   "Return MODEL's active chat filter key."
@@ -145,25 +124,35 @@
 
 (defun etaf-telega-model-set-chats (model chats)
   "Replace MODEL's chats with CHATS.
-The list cursor keeps its conversation when it is still present and falls
-back to the newest one."
-  (let ((current (etaf-telega-model-cursor model)))
-    (setf (etaf-value (plist-get model :chats)) chats
-          (etaf-value (plist-get model :cursor))
-          (if (and current (cl-find current chats
-                                    :key (lambda (chat) (plist-get chat :id))
-                                    :test #'equal))
-              current
-            (and chats (plist-get (car chats) :id))))))
+A chat whose projection is unchanged keeps its previous record, so only the
+rows of chats that really changed render again.  The list cursor keeps its
+conversation when it is still present and falls back to the newest one."
+  (let* ((old (make-hash-table :test #'equal))
+         (current (etaf-telega-model-cursor model)))
+    (dolist (chat (etaf-telega-model-chats model))
+      (puthash (plist-get chat :id) chat old))
+    (setq chats (mapcar (lambda (chat)
+                          (let ((previous (gethash (plist-get chat :id) old)))
+                            (if (equal previous chat) previous chat)))
+                        chats))
+    (etaf-batch
+      (unless (equal chats (etaf-telega-model-chats model))
+        (setf (etaf-value (plist-get model :chats)) chats))
+      (setf (etaf-value (plist-get model :cursor))
+            (if (and current
+                     (cl-find current chats
+                              :key (lambda (chat) (plist-get chat :id))
+                              :test #'equal))
+                current
+              (and chats (plist-get (car chats) :id)))))))
 
 (defun etaf-telega-model-select (model chat)
   "Select CHAT in MODEL.
-The loaded history, the message selection, the viewport and any compose
+The loaded history, the message selection and any compose
 state clear until the backend reports the chat's messages."
   (setf (etaf-value (plist-get model :chat)) chat
         (etaf-value (plist-get model :messages)) nil
         (etaf-value (plist-get model :selected)) nil
-        (etaf-value (plist-get model :scroll)) 0
         (etaf-value (plist-get model :compose)) nil))
 
 (defun etaf-telega--merge-messages (old new)
@@ -180,34 +169,23 @@ message instead of keeping the stale copy."
                (or (plist-get right :id) 0))))))
 
 (defun etaf-telega-model-set-messages (model messages)
-  "Merge MESSAGES into MODEL's loaded history and follow the newest one.
+  "Merge MESSAGES into MODEL's loaded history.
 A refresh that reports only part of the cached history must not drop
-already loaded pages, so pages merge by id; an initial page selects the
-newest message, a later refresh leaves selection and viewport alone."
-  (let* ((old (etaf-telega-model-messages model))
-         (merged (etaf-telega--merge-messages old messages))
-         (newest (car (last merged))))
-    (setf (etaf-value (plist-get model :messages)) merged)
-    (unless (etaf-telega-model-selected-id model)
-      (setf (etaf-value (plist-get model :selected))
-            (and newest (plist-get newest :id))
-            (etaf-value (plist-get model :scroll)) 0))))
+already loaded pages, so pages merge by id."
+  (setf (etaf-value (plist-get model :messages))
+        (etaf-telega--merge-messages (etaf-telega-model-messages model) messages)))
 
 (defun etaf-telega-model-set-selected (model id)
   "Select the message with ID in MODEL."
   (setf (etaf-value (plist-get model :selected)) id))
 
-(defun etaf-telega-model-move-selection (model delta)
-  "Move MODEL's message selection by DELTA messages."
-  (let* ((messages (etaf-telega-model-messages model))
-         (current (etaf-telega-model-selected-id model))
-         (index (cl-position current messages
-                             :key (lambda (message) (plist-get message :id))
-                             :test #'equal))
-         (index (or index (max 0 (1- (length messages)))))
-         (next (max 0 (min (1- (length messages)) (+ index delta))))
-         (message (nth next messages)))
-    (when message (etaf-telega-model-set-selected model (plist-get message :id)))))
+(defun etaf-telega-model-viewer (model)
+  "Return MODEL's open media viewer state, a plist, or nil."
+  (etaf-value (plist-get model :viewer)))
+
+(defun etaf-telega-model-set-viewer (model viewer)
+  "Set MODEL's media VIEWER state; nil closes the viewer."
+  (setf (etaf-value (plist-get model :viewer)) viewer))
 
 (defun etaf-telega-model-set-compose (model compose)
   "Set MODEL's compose state to COMPOSE, a `(:kind :target)' plist or nil."
@@ -270,6 +248,64 @@ The selection moves to the nearest remaining message."
   "Return MODEL's chat projection with ID, or nil."
   (cl-find id (etaf-telega-model-chats model)
            :key (lambda (chat) (plist-get chat :id)) :test #'equal))
+
+(defconst etaf-telega-model--recent-limit 12
+  "Most recently opened search results the model remembers.")
+
+(defun etaf-telega-model-searching (model)
+  "Return non-nil while MODEL shows the list search."
+  (etaf-value (plist-get model :searching)))
+
+(defun etaf-telega-model-search (model)
+  "Return MODEL's list search query."
+  (or (etaf-value (plist-get model :search)) ""))
+
+(defun etaf-telega-model-set-search (model searching &optional query)
+  "Show the list search in MODEL when SEARCHING, with QUERY.
+Leaving search clears the query and the kind tab."
+  (etaf-batch
+    (setf (etaf-value (plist-get model :searching)) (and searching t))
+    (setf (etaf-value (plist-get model :search)) (if searching (or query "") ""))
+    (unless searching
+      (setf (etaf-value (plist-get model :search-kind)) 'all))))
+
+(defun etaf-telega-model-set-search-kind (model kind)
+  "Narrow MODEL's search results to chats of KIND, or `all'."
+  (setf (etaf-value (plist-get model :search-kind)) kind))
+
+(defun etaf-telega-model-recent (model)
+  "Return MODEL's recently opened search result ids, newest first."
+  (etaf-value (plist-get model :recent)))
+
+(defun etaf-telega-model-add-recent (model id)
+  "Record chat ID as MODEL's most recently opened search result."
+  (setf (etaf-value (plist-get model :recent))
+        (seq-take (cons id (remove id (etaf-telega-model-recent model)))
+                  etaf-telega-model--recent-limit)))
+
+(defun etaf-telega-model-clear-recent (model)
+  "Forget MODEL's recently opened search results."
+  (setf (etaf-value (plist-get model :recent)) nil))
+
+(defun etaf-telega-model-chat-search (model)
+  "Return MODEL's in-chat search query, or nil while it is closed."
+  (etaf-value (plist-get model :chat-search)))
+
+(defun etaf-telega-model-set-chat-search (model query)
+  "Open MODEL's in-chat search with QUERY, or close it when QUERY is nil."
+  (setf (etaf-value (plist-get model :chat-search)) query))
+
+(defun etaf-telega-model-details (model)
+  "Return non-nil while MODEL shows the chat details pane."
+  (etaf-value (plist-get model :details)))
+
+(defun etaf-telega-model-set-details (model shown)
+  "Show MODEL's chat details pane when SHOWN."
+  (setf (etaf-value (plist-get model :details)) (and shown t)))
+
+(defun etaf-telega-model-set-list-width (model pixels)
+  "Set MODEL's list pane width to PIXELS, or nil for the default."
+  (setf (etaf-value (plist-get model :list-width)) pixels))
 
 (provide 'etaf-telega-model)
 ;;; etaf-telega-model.el ends here

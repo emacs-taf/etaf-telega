@@ -12,24 +12,38 @@
 ;;
 ;;   :status   (string)                 connection state for the header
 ;;   :me       (plist)                  own account (:id :name)
-;;   :chats    (list of chat plists)    (:id :title :preview :unread :pinned
-;;                                      :muted :time :order)
+;;   :chats    (list of chat plists)    (:id :title :preview :author :unread
+;;                                      :pinned :muted :kind :archived :mention
+;;                                      :online :username :time :order
+;;                                      :photo :members), main list then
+;;                                      archive, each in the server's order
 ;;   :messages (list of message plists) the chat's newest page, newest first
 ;;   :older    (list of message plists) an older page, newest first
 ;;   :message  (message plist)          one later message for the selected
 ;;             chat; the application appends it in reading order
 ;;   :sent     (message plist)          accepted outgoing message
-;;   :edited   (message plist)          message whose text was replaced
+;;   :edited   (message plist)          message whose text this client replaced
+;;   :updated  (message plist)          message changed elsewhere (content or
+;;                                      edit), replacing the copy with its id
 ;;   :deleted  (id)                     id of a removed message
 ;;   :read     (list of ids)            messages accepted as read
-;;   :describe (chat profile plist)     one chat's profile screen data
 ;;   :error    (string)                 readable failure
 ;;
-;; Message plists carry (:id :outgoing :sender :time :date :edited :text) in
-;; reading order; the application reverses pages into reading order for
-;; display.  Every live backend implements the generics below; the Telega
-;; adapter reuses Telega's server, TDLib calls and object cache, and the fake
-;; backend replays fixed data for tests and offline use.
+;; Message plists carry (:id :outgoing :sender :time :date :edited :kind
+;; :file :link :media :avatar :reply :reactions :duration :views :text);
+;; :views is a channel post's view count or nil, :reply is
+;; (:sender :kind :text) of the quoted message, :reactions a list of
+;; (:key :label :count :chosen) in server order and :duration the length in
+;; seconds of video, animation, voice and audio.  A chat's :photo, a message's sender :avatar and its
+;; :media :src are image sources:
+;; a local file path, an Emacs image descriptor (an in-memory preview), or
+;; nil.  :media is (:src :width :height) in source pixels for photos, video
+;; and animation thumbnails and stickers.  A backend fetches missing files
+;; itself and reports the chat list or an `:updated' message once they are
+;; local, so sources only ever improve.
+;; Every live backend implements the generics below; the Telega adapter reuses
+;; Telega's server, TDLib calls and object cache, and the fake backend replays
+;; fixed data for tests and offline use.
 ;;
 ;;   (start BACKEND CALLBACKS)            connect and report status, me, chats
 ;;   (stop BACKEND)                       stop observing; keep the account
@@ -37,20 +51,20 @@
 ;;   (history BACKEND &key before limit)  load messages older than BEFORE
 ;;   (send BACKEND TEXT &optional REPLY-TO)  send, optionally replying
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
-;;   (delete BACKEND MESSAGE)             remove one message
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
-;;   (describe BACKEND CHAT-ID)           report the chat profile
-;;   (chat-action BACKEND CHAT-ID ACTION &optional VALUE)
-;;                                        ACTION is `read', `unread', `pin',
-;;                                        `mute' or `archive'; pin/mute/archive
-;;                                        toggle, read/unread set the state
+;;   (react BACKEND MESSAGE-ID KEY)       toggle reaction KEY (an emoji string)
+;;                                        on a message; the change arrives
+;;                                        as an `:updated' message
+;;   (media BACKEND MESSAGE-ID CALLBACK)  fetch a message's full media file;
+;;                                        CALLBACK receives (PROGRESS SOURCE)
+;;                                        with PROGRESS from 0.0 to 1.0 and a
+;;                                        non-nil SOURCE once it is local
+;;   (native BACKEND COMMAND CHAT-ID &optional MESSAGE-ID)
+;;                                        run the backend's own interactive
+;;                                        COMMAND on that chat or message
 ;;
-;; Media and file capabilities join this contract when their views land.
-;;
-;; `etaf-telega-backend-telega' starts and observes Telega's own server and
-;; TDLib event stream.  Telega keeps the account, database and session; this
-;; backend only projects what the interface needs.  `etaf-telega-backend-fake'
-;; replays fixed data for tests and never touches the network.
+;; `native' is how the client reuses Telega's own commands (transient menus,
+;; reactions, forwarding, chat operations) instead of reimplementing them.
 
 ;;; Code:
 
@@ -73,20 +87,19 @@ BEFORE is the oldest loaded message id, or nil for the newest page.")
 (cl-defgeneric etaf-telega-backend-edit (backend message text)
   "Replace MESSAGE's text with TEXT through BACKEND.")
 
-(cl-defgeneric etaf-telega-backend-delete (backend message)
-  "Delete MESSAGE through BACKEND.")
-
 (cl-defgeneric etaf-telega-backend-read (backend message-ids)
   "Accept MESSAGE-IDS in BACKEND's selected chat as read.")
 
-(cl-defgeneric etaf-telega-backend-chat-action (backend chat-id action &optional value)
-  "Apply ACTION to CHAT-ID through BACKEND.
-`read' and `unread' set the state; `pin', `mute' and `archive' toggle it.")
+(cl-defgeneric etaf-telega-backend-react (backend message-id key)
+  "Toggle reaction KEY on MESSAGE-ID in BACKEND's selected chat.")
 
-(cl-defgeneric etaf-telega-backend-describe (backend chat-id)
-  "Report the selected chat's profile through BACKEND's `:describe' callback.
-The plist carries :id, :title, :username, :kind, :members, :description,
-:pinned, :muted and :unread.")
+(cl-defgeneric etaf-telega-backend-media (backend message-id callback)
+  "Fetch MESSAGE-ID's full media in BACKEND's selected chat.
+CALLBACK receives (PROGRESS SOURCE); SOURCE is non-nil once local.")
+
+(cl-defgeneric etaf-telega-backend-native (backend command chat-id &optional message-id)
+  "Run BACKEND's interactive COMMAND on CHAT-ID, or on its MESSAGE-ID.
+The command sees that chat or message as the one at point.")
 
 (cl-defgeneric etaf-telega-backend-stop (backend)
   "Release BACKEND's connection without touching Telega's account data.")
@@ -94,7 +107,7 @@ The plist carries :id, :title, :username, :kind, :members, :description,
 ;;; Fake backend
 
 (cl-defstruct etaf-telega-backend-fake
-  chats histories sent responder callbacks chat-id replies next-sent-id)
+  chats histories sent responder callbacks chat-id replies next-sent-id natives)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -195,20 +208,6 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
       (funcall report (copy-tree updated)))
     text))
 
-(cl-defmethod etaf-telega-backend-delete ((backend etaf-telega-backend-fake)
-                                          message)
-  "Remove MESSAGE from BACKEND's stored history and report its id."
-  (let ((chat-id (etaf-telega-backend-fake-chat-id backend)))
-    (puthash chat-id
-             (cl-remove (plist-get message :id)
-                        (gethash chat-id (etaf-telega-backend-fake-histories backend))
-                        :key (lambda (item) (plist-get item :id)) :test #'equal)
-             (etaf-telega-backend-fake-histories backend))
-    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
-                                   :deleted)))
-      (funcall report (plist-get message :id)))
-    (plist-get message :id)))
-
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
 
@@ -225,38 +224,38 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
       (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
     message-ids))
 
-(cl-defmethod etaf-telega-backend-describe ((backend etaf-telega-backend-fake)
-                                             chat-id)
-  "Report CHAT-ID's stored profile through the `:describe' callback."
-  (let ((chat (cl-find chat-id (etaf-telega-backend-fake-chats backend)
-                       :key (lambda (item) (plist-get item :id)) :test #'equal)))
-    (when-let* ((report (and chat
-                             (plist-get (etaf-telega-backend-fake-callbacks backend)
-                                        :describe))))
-      (funcall report (copy-tree chat)))
-    chat))
+(cl-defmethod etaf-telega-backend-react ((backend etaf-telega-backend-fake)
+                                         message-id key)
+  "Toggle KEY on MESSAGE-ID's stored reactions and report the message."
+  (when-let* ((message (etaf-telega-backend-fake-message backend message-id)))
+    (let* ((reactions (plist-get message :reactions))
+           (old (cl-find key reactions :key (lambda (item) (plist-get item :key))
+                         :test #'equal))
+           (chosen (not (plist-get old :chosen)))
+           (count (+ (or (plist-get old :count) 0) (if chosen 1 -1)))
+           (item (list :key key :label (or (plist-get old :label) key)
+                       :count count :chosen chosen))
+           (updated (copy-tree message)))
+      (setf (plist-get updated :reactions)
+            (cond ((<= count 0) (remq old reactions))
+                  (old (cl-substitute item old reactions))
+                  (t (append reactions (list item)))))
+      (etaf-telega-backend-fake-update backend updated)))
+  key)
 
-(cl-defmethod etaf-telega-backend-chat-action ((backend etaf-telega-backend-fake)
-                                               chat-id action &optional value)
-  "Apply ACTION to CHAT-ID in BACKEND's stored chats."
-  (setf (etaf-telega-backend-fake-chats backend)
-        (cl-mapcar (lambda (chat)
-                     (if (equal (plist-get chat :id) chat-id)
-                         (let ((updated (copy-tree chat)))
-                           (pcase action
-                             ('read (plist-put updated :unread 0))
-                             ('unread (plist-put updated :unread (or (plist-get updated :unread) 1)))
-                             ('pin (plist-put updated :pinned (not (plist-get updated :pinned))))
-                             ('mute (plist-put updated :muted (or value (not (plist-get updated :muted)))))
-                             ('archive (plist-put updated :archived (not (plist-get updated :archived))))
-                             (_ (error "Unknown chat action: %s" action)))
-                           updated)
-                       chat))
-                   (etaf-telega-backend-fake-chats backend)))
-  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
-                                 :chats)))
-    (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
-  action)
+(cl-defmethod etaf-telega-backend-media ((backend etaf-telega-backend-fake)
+                                         message-id callback)
+  "Report MESSAGE-ID's stored full media, or its preview, as local."
+  (let* ((message (etaf-telega-backend-fake-message backend message-id))
+         (media (plist-get message :media)))
+    (funcall callback 1.0 (or (plist-get media :full) (plist-get media :src)))))
+
+(cl-defmethod etaf-telega-backend-native ((backend etaf-telega-backend-fake)
+                                          command chat-id &optional message-id)
+  "Record COMMAND on CHAT-ID and MESSAGE-ID instead of running it."
+  (push (list command chat-id message-id)
+        (etaf-telega-backend-fake-natives backend))
+  command)
 
 (defun etaf-telega-backend-fake-message (backend id)
   "Return BACKEND's stored message with ID, or nil."
@@ -269,6 +268,30 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
   (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                  :message)))
     (funcall report (copy-tree message))))
+
+(defun etaf-telega-backend-fake-update (backend message)
+  "Store MESSAGE in BACKEND's selected chat and report it as changed."
+  (let ((chat-id (etaf-telega-backend-fake-chat-id backend)))
+    (puthash chat-id
+             (cl-mapcar (lambda (item)
+                          (if (equal (plist-get item :id) (plist-get message :id))
+                              message item))
+                        (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+             (etaf-telega-backend-fake-histories backend))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :updated)))
+      (funcall report (copy-tree message)))))
+
+(defun etaf-telega-backend-fake-remove (backend id)
+  "Remove message ID from BACKEND's selected chat and report the deletion."
+  (let ((chat-id (etaf-telega-backend-fake-chat-id backend)))
+    (puthash chat-id
+             (cl-remove id (gethash chat-id (etaf-telega-backend-fake-histories backend))
+                        :key (lambda (item) (plist-get item :id)) :test #'equal)
+             (etaf-telega-backend-fake-histories backend))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :deleted)))
+      (funcall report id))))
 
 (defun etaf-telega-backend-fake-complete (backend text)
   "Report TEXT as accepted by BACKEND, exactly like a server acknowledgement.
@@ -304,51 +327,122 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega-chat--info-locally "telega-chat" (chat))
 (declare-function telega-msg-match-p "telega-msg" (msg msg-temex &optional no-error))
 (declare-function telega-tl-str "telega-core" (obj &optional prop no-properties))
-(declare-function telega-tl-get0 "telega-core" (obj prop1 &rest props))
 (declare-function telega-user-online-p "telega-user" (user))
 (declare-function telega-chat-muted-p "telega-chat" (chat))
-(declare-function telega-chat-toggle-read "telega-chat" (chat))
-(declare-function telega-chat-toggle-pin "telega-chat" (chat))
-(declare-function telega-chat-toggle-muted "telega-chat" (chat &optional muted-for))
-(declare-function telega-chat-toggle-archive "telega-chat" (chat))
 (declare-function telega--viewMessages "telega-tdlib" (chat messages &rest args))
 (declare-function telega--getChatHistory "telega-tdlib"
                   (chat from-msg-id offset &optional limit only-local callback))
 (declare-function telega--sendMessage "telega-tdlib" (chat imc &rest args))
 (declare-function telega--editMessageText "telega-tdlib" (msg imc &rest args))
-(declare-function telega--deleteMessages "telega-tdlib" (messages &optional revoke))
 (declare-function telega--on-updateMessageSendFailed "telega-tdlib-events" (event))
+(declare-function telega--getRepliedMessage "telega-tdlib" (msg &optional callback))
 (declare-function telega-msg-content-text "telega-msg"
                   (msg &optional with-speech-recognition-p))
 (declare-function telega-msg-sender "telega-msg" (tl-obj))
 (declare-function telega-msg-sender-title "telega-msg" (msg-sender &rest args))
+(declare-function telega-file--renew "telega-media" (place prop))
+(declare-function telega-file--download "telega-media" (file &rest args))
+(declare-function telega-photo--best "telega-media" (photo &optional limits))
+(declare-function telega-file--downloaded-p "telega-core" (file))
+(declare-function telega-file--can-download-p "telega-core" (file))
+(declare-function telega-file--downloading-progress "telega-core" (file))
+(declare-function telega--addMessageReaction "telega-tdlib"
+                  (msg tl-reaction-type &optional big-p update-recent-reactions-p))
+(declare-function telega--removeMessageReaction "telega-tdlib"
+                  (msg tl-reaction-type &optional callback))
 (defvar telega--chats)
+(defvar telega--cached-messages)
 (defvar telega-ready-hook)
 (defvar telega-chat-update-hook)
 (defvar telega-chat-post-message-hook)
 
 (cl-defstruct (etaf-telega-backend-telega
                (:constructor etaf-telega-backend-telega-create))
-  callbacks chat-id pending)
+  callbacks chat-id pending
+  (raws (make-hash-table :test #'equal)))
 
 (defvar etaf-telega-backend-telega-instances nil
   "Live telega backends observing the shared Telega event stream.")
 
-(defun etaf-telega-backend-telega--project-chat (chat)
-  "Return CHAT's projection plist."
-  (let ((last (plist-get chat :last_message)))
+(defun etaf-telega-backend-telega--time-label (seconds)
+  "Return SECONDS as a chat list stamp: time today, weekday this week, date."
+  (let ((time (seconds-to-time (or seconds 0))))
+    (cond ((null seconds) "")
+          ((equal (format-time-string "%F" time) (format-time-string "%F"))
+           (format-time-string "%H:%M" time))
+          ((< (float-time (time-subtract nil time)) (* 6 24 3600))
+           (format-time-string "%a" time))
+          (t (format-time-string "%m-%d" time)))))
+
+(defun etaf-telega-backend-telega--kind (chat)
+  "Return CHAT's interface kind: `channel', `private' or `group'."
+  (cond ((ignore-errors (telega-chat-match-p chat '(type channel))) 'channel)
+        ((ignore-errors (telega-chat-match-p chat '(type private))) 'private)
+        (t 'group)))
+
+(defun etaf-telega-backend-telega--sender (message)
+  "Return MESSAGE's sender title, or the empty string."
+  (or (ignore-errors (telega-msg-sender-title (telega-msg-sender message))) ""))
+
+(defvar etaf-telega-backend-telega--downloads (make-hash-table :test #'eql)
+  "Ids of Telega files whose download this client has requested.")
+
+(defun etaf-telega-backend-telega--minithumb (minithumbnail)
+  "Return MINITHUMBNAIL as an in-memory JPEG image descriptor, or nil."
+  (when-let* ((data (plist-get minithumbnail :data))
+              ((stringp data))
+              (bytes (ignore-errors (base64-decode-string data))))
+    (list 'image :type 'jpeg :data bytes)))
+
+(defun etaf-telega-backend-telega--file-source (place prop &optional on-ready)
+  "Return the local path of the Telega file at PLACE's PROP, or nil.
+A missing file starts downloading once; ON-READY runs when it is local."
+  (when-let* ((file (and place (ignore-errors (telega-file--renew place prop)))))
+    (if (telega-file--downloaded-p file)
+        (plist-get (plist-get file :local) :path)
+      (let ((id (plist-get file :id)))
+        (when (and id on-ready
+                   (not (gethash id etaf-telega-backend-telega--downloads))
+                   (telega-file--can-download-p file))
+          (puthash id t etaf-telega-backend-telega--downloads)
+          (telega-file--download
+           file :priority 16
+           :update-callback
+           (lambda (updated)
+             (when (telega-file--downloaded-p updated)
+               (funcall on-ready))))))
+      nil)))
+
+(defun etaf-telega-backend-telega--position (chat)
+  "Return CHAT's main or archive chat list position, or nil."
+  (let (main archive)
+    (seq-doseq (position (plist-get chat :positions))
+      (pcase (plist-get (plist-get position :list) :@type)
+        ("chatListMain" (setq main position))
+        ("chatListArchive" (setq archive position))))
+    (let ((position (or main archive)))
+      (and position (not (equal (plist-get position :order) "0"))
+           position))))
+
+(defun etaf-telega-backend-telega--project-chat (chat &optional position)
+  "Return CHAT's projection plist at chat list POSITION."
+  (let* ((last (plist-get chat :last_message))
+         (position (or position (etaf-telega-backend-telega--position chat)))
+         (kind (etaf-telega-backend-telega--kind chat))
+         (text (or (and last (ignore-errors (telega-msg-content-text last))) "")))
     (list :id (plist-get chat :id)
           :title (or (ignore-errors (telega-chat-title chat)) "?")
-          :preview (or (ignore-errors (telega-msg-content-text last)) "")
+          :preview text
+          :author (and last (eq kind 'group)
+                       (if (eq t (plist-get last :is_outgoing))
+                           "我"
+                         (etaf-telega-backend-telega--sender last)))
           :unread (or (plist-get chat :unread_count) 0)
-          :pinned (eq t (plist-get chat :is_pinned))
+          :pinned (eq t (plist-get position :is_pinned))
           :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
-          :kind (cond ((ignore-errors (telega-chat-match-p chat '(type channel)))
-                       'channel)
-                      ((ignore-errors (telega-chat-match-p chat '(type private)))
-                       'private)
-                      (t 'group))
-          :archived (and (ignore-errors (telega-chat-match-p chat 'archive)) t)
+          :kind kind
+          :archived (equal (plist-get (plist-get position :list) :@type)
+                           "chatListArchive")
           :mention (or (plist-get chat :unread_mention_count) 0)
           :online (and (ignore-errors
                         (telega-user-online-p (telega-chat--info-locally chat)))
@@ -356,28 +450,140 @@ like a real sent message instead of colliding with existing ids."
           :username (or (ignore-errors
                          (telega-tl-str (telega-chat--info-locally chat) :username))
                         "")
+          :members (and (memq kind '(group channel))
+                        (let ((count (ignore-errors
+                                       (plist-get (telega-chat--info-locally chat)
+                                                  :member_count))))
+                          (and (natnump count) (> count 0) count)))
           :time (if last
-                    (format-time-string
-                     "%H:%M" (seconds-to-time (or (plist-get last :date) 0)))
+                    (etaf-telega-backend-telega--time-label (plist-get last :date))
                   "")
-          :order (or (plist-get chat :order) 0))))
+          :order (string-to-number (or (plist-get position :order) "0"))
+          :photo (etaf-telega-backend-telega--file-source
+                  (plist-get chat :photo) :small
+                  #'etaf-telega-backend-telega--schedule-chats))))
 
-(defun etaf-telega-backend-telega--project-message (message)
-  "Return MESSAGE's projection plist."
-  (list :id (plist-get message :id)
-        :outgoing (eq t (plist-get message :is_outgoing))
-        :sender (or (ignore-errors (telega-msg-sender-title
-                                    (telega-msg-sender message)))
-                    "")
-        :time (format-time-string "%H:%M"
-                                  (seconds-to-time (or (plist-get message :date) 0)))
-        :date (format-time-string "%Y-%m-%d"
-                                  (seconds-to-time (or (plist-get message :date) 0)))
-        :edited (eq t (plist-get message :edit_date))
-        :kind (etaf-telega-backend-telega--message-kind message)
-        :file (etaf-telega-backend-telega--message-file message)
-        :link (etaf-telega-backend-telega--message-link message)
-        :text (or (ignore-errors (telega-msg-content-text message)) "")))
+(defun etaf-telega-backend-telega--raw (backend chat-id id)
+  "Return the raw TDLib message ID of CHAT-ID known to BACKEND or Telega."
+  (let ((key (cons chat-id id)))
+    (or (and (hash-table-p telega--cached-messages)
+             (gethash key telega--cached-messages))
+        (gethash key (etaf-telega-backend-telega-raws backend)))))
+
+(defvar etaf-telega-backend-telega--quote-requests (make-hash-table :test #'equal)
+  "Messages whose quoted message was requested from TDLib, by (CHAT . ID).")
+
+(defun etaf-telega-backend-telega--quoted (backend message)
+  "Return the raw message MESSAGE replies to, or nil while unknown.
+An unloaded quote is requested once; MESSAGE is reported again when it
+arrives, so its reply preview appears without a placeholder."
+  (let* ((reply-to (plist-get message :reply_to))
+         (reply-id (plist-get reply-to :message_id))
+         (chat-id (plist-get message :chat_id))
+         (quote-chat (let ((id (plist-get reply-to :chat_id)))
+                       (if (and (numberp id) (/= id 0)) id chat-id))))
+    (when (and reply-id (/= reply-id 0))
+      (or (etaf-telega-backend-telega--raw backend quote-chat reply-id)
+          (let ((key (cons chat-id (plist-get message :id))))
+            (unless (gethash key etaf-telega-backend-telega--quote-requests)
+              (puthash key t etaf-telega-backend-telega--quote-requests)
+              (ignore-errors
+                (telega--getRepliedMessage message
+                  (lambda (quoted)
+                    (when (equal (plist-get quoted :@type) "message")
+                      (puthash (cons (plist-get quoted :chat_id)
+                                     (plist-get quoted :id))
+                               quoted (etaf-telega-backend-telega-raws backend))
+                      (etaf-telega-backend-telega--media-ready
+                       backend chat-id (cdr key)))))))
+            nil)))))
+
+(defun etaf-telega-backend-telega--project-message (backend message)
+  "Return MESSAGE's projection plist and remember MESSAGE in BACKEND.
+The raw message stays available to Telega's own commands run through
+`etaf-telega-backend-native'."
+  (let* ((chat-id (plist-get message :chat_id))
+         (date (seconds-to-time (or (plist-get message :date) 0)))
+         (edit-date (plist-get message :edit_date))
+         (quoted (etaf-telega-backend-telega--quoted backend message)))
+    (puthash (cons chat-id (plist-get message :id)) message
+             (etaf-telega-backend-telega-raws backend))
+    (list :id (plist-get message :id)
+          :outgoing (eq t (plist-get message :is_outgoing))
+          :sender (etaf-telega-backend-telega--sender message)
+          :time (format-time-string "%H:%M" date)
+          :date (format-time-string "%Y-%m-%d" date)
+          :edited (and (numberp edit-date) (> edit-date 0))
+          :kind (etaf-telega-backend-telega--message-kind message)
+          :file (etaf-telega-backend-telega--message-file message)
+          :link (etaf-telega-backend-telega--message-link message)
+          :media (etaf-telega-backend-telega--message-media backend message)
+          :avatar (etaf-telega-backend-telega--sender-photo backend message)
+          :reactions (etaf-telega-backend-telega--reactions message)
+          :duration (etaf-telega-backend-telega--duration message)
+          :views (let ((count (ignore-errors
+                                (plist-get (plist-get message :interaction_info)
+                                           :view_count))))
+                   (and (numberp count) (> count 0) count))
+          :reply (and quoted
+                      (list :sender (etaf-telega-backend-telega--sender quoted)
+                            :kind (etaf-telega-backend-telega--message-kind quoted)
+                            :text (or (ignore-errors
+                                        (telega-msg-content-text quoted))
+                                      "")))
+          :text (or (ignore-errors (telega-msg-content-text message)) ""))))
+
+(defun etaf-telega-backend-telega--reaction-key (type)
+  "Return the interface key of TDLib reaction TYPE, or nil."
+  (pcase (plist-get type :@type)
+    ("reactionTypeEmoji" (telega-tl-str type :emoji 'no-properties))
+    ("reactionTypeCustomEmoji" (cons 'custom (plist-get type :custom_emoji_id)))
+    ("reactionTypePaid" 'paid)))
+
+(defun etaf-telega-backend-telega--reactions (message)
+  "Return MESSAGE's reactions as (:key :label :count :chosen) plists."
+  (let (result)
+    (seq-doseq (reaction (ignore-errors
+                           (plist-get (plist-get (plist-get message :interaction_info)
+                                                 :reactions)
+                                      :reactions)))
+      (when-let* ((key (etaf-telega-backend-telega--reaction-key
+                        (plist-get reaction :type))))
+        (push (list :key key
+                    :label (cond ((stringp key) key) ((eq key 'paid) "⭐") (t "✦"))
+                    :count (or (plist-get reaction :total_count) 0)
+                    :chosen (eq t (plist-get reaction :is_chosen)))
+              result)))
+    (nreverse result)))
+
+(defun etaf-telega-backend-telega--duration (message)
+  "Return the playing time in seconds of MESSAGE's media, or nil."
+  (let ((content (plist-get message :content)))
+    (ignore-errors
+      (pcase (plist-get content :@type)
+        ("messageVideo" (plist-get (plist-get content :video) :duration))
+        ("messageAnimation" (plist-get (plist-get content :animation) :duration))
+        ("messageVoiceNote" (plist-get (plist-get content :voice_note) :duration))
+        ("messageAudio" (plist-get (plist-get content :audio) :duration))))))
+
+(defun etaf-telega-backend-telega--full-file (message)
+  "Return (PLACE . PROP) of MESSAGE's full-size media file, or nil."
+  (let ((content (plist-get message :content)))
+    (pcase (plist-get content :@type)
+      ("messagePhoto"
+       (let (best)
+         (seq-doseq (size (plist-get (plist-get content :photo) :sizes))
+           (when (or (null best)
+                     (> (* (or (plist-get size :width) 0) (or (plist-get size :height) 0))
+                        (* (or (plist-get best :width) 0) (or (plist-get best :height) 0))))
+             (setq best size)))
+         (and best (cons best :photo))))
+      ("messageVideo" (cons (plist-get content :video) :video))
+      ("messageAnimation" (cons (plist-get content :animation) :animation))
+      ("messageSticker" (cons (plist-get content :sticker) :sticker))
+      ("messageDocument" (cons (plist-get content :document) :document))
+      ("messageVoiceNote" (cons (plist-get content :voice_note) :voice))
+      ("messageAudio" (cons (plist-get content :audio) :audio)))))
 
 (defun etaf-telega-backend-telega--message-kind (message)
   "Return MESSAGE's content kind for the interface."
@@ -389,6 +595,92 @@ like a real sent message instead of colliding with existing ids."
         ((ignore-errors (telega-msg-match-p message '(type Sticker))) 'sticker)
         ((ignore-errors (telega-msg-match-p message '(type Document))) 'file)
         (t 'text)))
+
+(defun etaf-telega-backend-telega--media-ready (backend chat-id id)
+  "Report message ID of CHAT-ID again to BACKEND once its media is local."
+  (when (and (memq backend etaf-telega-backend-telega-instances)
+             (equal (etaf-telega-backend-telega-chat-id backend) chat-id))
+    (etaf-telega-backend-telega--guard
+     backend "加载媒体"
+     (lambda ()
+       (when-let* ((raw (etaf-telega-backend-telega--raw backend chat-id id))
+                   (report (plist-get (etaf-telega-backend-telega-callbacks backend)
+                                      :updated)))
+         (funcall report (etaf-telega-backend-telega--project-message
+                          backend raw)))))))
+
+(defun etaf-telega-backend-telega--senders-ready (backend chat-id sender)
+  "Report BACKEND's loaded CHAT-ID messages from SENDER again."
+  (when (and (memq backend etaf-telega-backend-telega-instances)
+             (equal (etaf-telega-backend-telega-chat-id backend) chat-id))
+    (let (ids)
+      (maphash (lambda (key raw)
+                 (when (and (equal (car key) chat-id)
+                            (equal (plist-get raw :sender_id) sender))
+                   (push (cdr key) ids)))
+               (etaf-telega-backend-telega-raws backend))
+      (dolist (id ids)
+        (etaf-telega-backend-telega--media-ready backend chat-id id)))))
+
+(defun etaf-telega-backend-telega--sender-photo (backend message)
+  "Return the image source of MESSAGE's sender photo, or nil."
+  (let* ((sender-id (plist-get message :sender_id))
+         (chat-id (plist-get message :chat_id))
+         (sender (ignore-errors (telega-msg-sender message)))
+         (photo (or (plist-get sender :profile_photo) (plist-get sender :photo))))
+    (and photo
+         (etaf-telega-backend-telega--file-source
+          photo :small
+          (lambda ()
+            (etaf-telega-backend-telega--senders-ready backend chat-id sender-id))))))
+
+(defun etaf-telega-backend-telega--thumbnail (owner ready)
+  "Return (SRC WIDTH HEIGHT) of OWNER's displayable thumbnail.
+READY runs once a missing thumbnail file becomes local."
+  (let* ((thumb (plist-get owner :thumbnail))
+         (format (plist-get (plist-get thumb :format) :@type))
+         (src (and (member format '("thumbnailFormatJpeg" "thumbnailFormatPng"
+                                    "thumbnailFormatWebp" "thumbnailFormatGif"))
+                   (etaf-telega-backend-telega--file-source thumb :file ready))))
+    (list (or src (etaf-telega-backend-telega--minithumb
+                   (plist-get owner :minithumbnail)))
+          (or (plist-get owner :width) (plist-get thumb :width))
+          (or (plist-get owner :height) (plist-get thumb :height)))))
+
+(defun etaf-telega-backend-telega--message-media (backend message)
+  "Return MESSAGE's visual media (:src :width :height), or nil."
+  (let* ((content (plist-get message :content))
+         (chat-id (plist-get message :chat_id))
+         (id (plist-get message :id))
+         (ready (lambda ()
+                  (etaf-telega-backend-telega--media-ready backend chat-id id)))
+         (found
+          (ignore-errors
+            (pcase (plist-get content :@type)
+              ("messagePhoto"
+               (let* ((photo (plist-get content :photo))
+                      (size (telega-photo--best photo)))
+                 (list (or (etaf-telega-backend-telega--file-source size :photo ready)
+                           (etaf-telega-backend-telega--minithumb
+                            (plist-get photo :minithumbnail)))
+                       (plist-get size :width) (plist-get size :height))))
+              ("messageVideo"
+               (etaf-telega-backend-telega--thumbnail (plist-get content :video) ready))
+              ("messageAnimation"
+               (etaf-telega-backend-telega--thumbnail
+                (plist-get content :animation) ready))
+              ("messageSticker"
+               (let ((sticker (plist-get content :sticker)))
+                 (if (and (equal (plist-get (plist-get sticker :format) :@type)
+                                 "stickerFormatWebp")
+                          (image-type-available-p 'webp))
+                     (list (etaf-telega-backend-telega--file-source
+                            sticker :sticker ready)
+                           (plist-get sticker :width) (plist-get sticker :height))
+                   (etaf-telega-backend-telega--thumbnail sticker ready))))))))
+    (when (and found (natnump (nth 1 found)) (natnump (nth 2 found))
+               (> (nth 1 found) 0) (> (nth 2 found) 0))
+      (list :src (nth 0 found) :width (nth 1 found) :height (nth 2 found)))))
 
 (defun etaf-telega-backend-telega--message-file (message)
   "Return MESSAGE's document (:name :size) when it carries one."
@@ -406,14 +698,17 @@ like a real sent message instead of colliding with existing ids."
             :description (or (plist-get page :description) "")))))
 
 (defun etaf-telega-backend-telega--chats ()
-  "Return all known chats as projections, newest first."
+  "Return the main list then the archive as projections, in server order."
   (let (result)
     (maphash (lambda (_id chat)
-               (push (etaf-telega-backend-telega--project-chat chat) result))
+               (when-let* ((position (etaf-telega-backend-telega--position chat)))
+                 (push (etaf-telega-backend-telega--project-chat chat position)
+                       result)))
              telega--chats)
     (sort result (lambda (a b)
-                   (> (or (plist-get a :order) 0)
-                      (or (plist-get b :order) 0))))))
+                   (if (eq (plist-get a :archived) (plist-get b :archived))
+                       (> (plist-get a :order) (plist-get b :order))
+                     (plist-get b :archived))))))
 
 (cl-defun etaf-telega-backend-telega--report (backend &key status chats me error)
   "Report BACKEND's current facts through its callbacks.
@@ -491,7 +786,8 @@ every other message reaches the application through `:message'."
          backend "接收消息"
          (lambda ()
            (let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
-                  (projected (etaf-telega-backend-telega--project-message message))
+                  (projected (etaf-telega-backend-telega--project-message
+                              backend message))
                   (pending (etaf-telega-backend-telega-pending backend))
                   (text (plist-get projected :text))
                   (record (cl-find text pending
@@ -538,8 +834,8 @@ account and its database."
         (add-hook 'telega-ready-hook #'etaf-telega-backend-telega--ready)
         (add-hook 'telega-chat-update-hook #'etaf-telega-backend-telega--chat-update)
         (add-hook 'telega-chat-post-message-hook #'etaf-telega-backend-telega--message)
-        (advice-add 'telega--on-updateMessageSendFailed :after
-                    #'etaf-telega-backend-telega--send-failed)
+        (dolist (advice etaf-telega-backend-telega--advices)
+          (advice-add (nth 0 advice) (nth 1 advice) (nth 2 advice)))
         (if (telega-server-live-p)
             (etaf-telega-backend-telega--ready)
           (telega '(4))))
@@ -551,6 +847,7 @@ account and its database."
                                           chat-id)
   "Load CHAT-ID's newest history page through Telega and read it."
   (setf (etaf-telega-backend-telega-chat-id backend) chat-id)
+  (clrhash (etaf-telega-backend-telega-raws backend))
   (let ((callbacks (etaf-telega-backend-telega-callbacks backend)))
     (condition-case err
         (when-let* ((chat (telega-chat-get chat-id)))
@@ -563,7 +860,9 @@ account and its database."
                 (let ((messages (append (plist-get event :messages) nil)))
                   (when-let* ((report (plist-get callbacks :messages)))
                     (funcall report
-                             (mapcar #'etaf-telega-backend-telega--project-message
+                             (mapcar (lambda (message)
+                                       (etaf-telega-backend-telega--project-message
+                                        backend message))
                                      messages)))
                   ;; Opening a conversation reads its loaded page, exactly like
                   ;; Telega's own chat buffer.
@@ -590,7 +889,9 @@ account and its database."
               (lambda ()
                 (when-let* ((report (plist-get callbacks :older)))
                   (funcall report
-                           (mapcar #'etaf-telega-backend-telega--project-message
+                           (mapcar (lambda (message)
+                                     (etaf-telega-backend-telega--project-message
+                                      backend message))
                                    (append (plist-get event :messages) nil)))))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))))
@@ -611,54 +912,6 @@ account and its database."
               (funcall report (copy-sequence message-ids))))
         (error (etaf-telega-backend-telega--report
                 backend :error (error-message-string err)))))))
-
-(cl-defmethod etaf-telega-backend-chat-action ((backend etaf-telega-backend-telega)
-                                               chat-id action &optional value)
-  "Apply ACTION to CHAT-ID through Telega's own chat commands."
-  (condition-case err
-      (let ((chat (telega-chat-get chat-id)))
-        (unless chat (error "没有这个对话：%s" chat-id))
-        (pcase action
-          ('read (when (> (or (plist-get chat :unread_count) 0) 0)
-                   (telega-chat-toggle-read chat)))
-          ('unread (when (= (or (plist-get chat :unread_count) 0) 0)
-                     (telega-chat-toggle-read chat)))
-          ('pin (telega-chat-toggle-pin chat))
-          ('mute (telega-chat-toggle-muted chat value))
-          ('archive (telega-chat-toggle-archive chat))
-          (_ (error "不支持的会话动作：%s" action)))
-        action)
-    (error (etaf-telega-backend-telega--report
-            backend :error (error-message-string err))
-           nil)))
-
-(cl-defmethod etaf-telega-backend-describe ((backend etaf-telega-backend-telega)
-                                             chat-id)
-  "Report CHAT-ID's live profile through Telega's own objects."
-  (let* ((callbacks (etaf-telega-backend-telega-callbacks backend))
-         (chat (ignore-errors (telega-chat-get chat-id))))
-    (when chat
-      (condition-case err
-          (let* ((info (ignore-errors (telega-chat--info-locally chat))))
-            (when-let* ((report (plist-get callbacks :describe)))
-              (funcall report
-                       (list :id chat-id
-                             :title (or (ignore-errors (telega-chat-title chat)) "?")
-                             :username (or (ignore-errors (telega-tl-str info :username)) "")
-                             :kind (plist-get (etaf-telega-backend-telega--project-chat chat)
-                                              :kind)
-                             :members (or (ignore-errors
-                                            (telega-tl-get0 info :member_count))
-                                          0)
-                             :description (or (ignore-errors
-                                                (telega-tl-str info :description))
-                                              "")
-                             :pinned (eq t (plist-get chat :is_pinned))
-                             :muted (and (ignore-errors (telega-chat-muted-p chat)) t)
-                             :unread (or (plist-get chat :unread_count) 0)))))
-        (error (etaf-telega-backend-telega--report
-                backend :error (error-message-string err)))))
-    chat-id))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-telega)
                                         text &optional reply-to)
@@ -713,25 +966,139 @@ failures are reported without keeping a half-send."
                  (format "编辑失败：%s" (plist-get result :message))))
                (t (when-let* ((report (plist-get callbacks :edited)))
                     (funcall report
-                             (etaf-telega-backend-telega--project-message result)))))))))
+                             (etaf-telega-backend-telega--project-message
+                              backend result)))))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))
     text))
 
-(cl-defmethod etaf-telega-backend-delete ((backend etaf-telega-backend-telega)
-                                          message)
-  "Delete MESSAGE from the selected Telega chat."
+(cl-defmethod etaf-telega-backend-react ((backend etaf-telega-backend-telega)
+                                         message-id key)
+  "Toggle reaction KEY on MESSAGE-ID through Telega.
+TDLib answers with an interaction update, reported as `:updated'."
   (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
-         (callbacks (etaf-telega-backend-telega-callbacks backend))
-         (target (list :chat_id chat-id :id (plist-get message :id))))
-    (condition-case err
-        (progn
-          (telega--deleteMessages (list target))
-          (when-let* ((report (plist-get callbacks :deleted)))
-            (funcall report (plist-get message :id))))
-      (error (etaf-telega-backend-telega--report
-              backend :error (error-message-string err))))
-    (plist-get message :id)))
+         (raw (etaf-telega-backend-telega--raw backend chat-id message-id))
+         (type (cond ((stringp key) (list :@type "reactionTypeEmoji" :emoji key))
+                     ((eq (car-safe key) 'custom)
+                      (list :@type "reactionTypeCustomEmoji"
+                            :custom_emoji_id (cdr key)))))
+         (chosen (cl-find key (etaf-telega-backend-telega--reactions raw)
+                          :key (lambda (item) (plist-get item :key)) :test #'equal)))
+    (etaf-telega-backend-telega--guard
+     backend "表情回应"
+     (lambda ()
+       (unless (and raw type)
+         (error "无法回应这条消息"))
+       (if (plist-get chosen :chosen)
+           (telega--removeMessageReaction raw type)
+         (telega--addMessageReaction raw type))))
+    key))
+
+(cl-defmethod etaf-telega-backend-media ((backend etaf-telega-backend-telega)
+                                         message-id callback)
+  "Download MESSAGE-ID's full media through Telega, reporting progress."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (raw (etaf-telega-backend-telega--raw backend chat-id message-id))
+         (where (and raw (etaf-telega-backend-telega--full-file raw)))
+         (file (and where (car where)
+                    (ignore-errors (telega-file--renew (car where) (cdr where)))))
+         (report (lambda (file)
+                   (etaf-telega-backend-telega--guard
+                    backend "加载媒体"
+                    (lambda ()
+                      (if (telega-file--downloaded-p file)
+                          (funcall callback 1.0
+                                   (plist-get (plist-get file :local) :path))
+                        (funcall callback
+                                 (telega-file--downloading-progress file) nil)))))))
+    (cond ((null file)
+           (etaf-telega-backend-telega--report backend :error "这条消息没有媒体文件"))
+          ((telega-file--downloaded-p file) (funcall report file))
+          (t (funcall report file)
+             (telega-file--download file :priority 32 :update-callback report)))))
+
+(defvar-local etaf-telega-backend-telega--target nil
+  "The (CHAT . MESSAGE) a native command run from this buffer operates on.
+It stays after the command returns so transient suffixes invoked later from
+the same buffer still find their target.")
+
+(defun etaf-telega-backend-telega--chat-at (&rest _)
+  "Return the current buffer's native command chat, if any."
+  (car-safe etaf-telega-backend-telega--target))
+
+(defun etaf-telega-backend-telega--msg-at (&rest _)
+  "Return the current buffer's native command message, if any."
+  (cdr-safe etaf-telega-backend-telega--target))
+
+(cl-defmethod etaf-telega-backend-native ((backend etaf-telega-backend-telega)
+                                          command chat-id &optional message-id)
+  "Run Telega's interactive COMMAND with CHAT-ID or MESSAGE-ID at point.
+Telega's commands resolve their target through `telega-chat-at' and
+`telega-msg-at'; this buffer answers both with the requested objects."
+  (let* ((chat (or (ignore-errors (telega-chat-get chat-id 'offline))
+                   (user-error "没有这个对话：%s" chat-id)))
+         (message (and message-id
+                       (or (etaf-telega-backend-telega--raw backend chat-id message-id)
+                           (user-error "这条消息尚未载入")))))
+    (setq etaf-telega-backend-telega--target (cons chat message))
+    (call-interactively command)))
+
+(defun etaf-telega-backend-telega--message-changed (event)
+  "Report the message changed by update EVENT to backends viewing its chat."
+  (let ((chat-id (plist-get event :chat_id))
+        (id (plist-get event :message_id)))
+    (dolist (backend etaf-telega-backend-telega-instances)
+      (when (equal (etaf-telega-backend-telega-chat-id backend) chat-id)
+        (etaf-telega-backend-telega--guard
+         backend "更新消息"
+         (lambda ()
+           (when-let* ((raw (etaf-telega-backend-telega--raw backend chat-id id))
+                       (report (plist-get (etaf-telega-backend-telega-callbacks backend)
+                                          :updated)))
+             ;; Telega patches only messages it displays or caches; keep the
+             ;; client's own copy current too.
+             (pcase (plist-get event :@type)
+               ("updateMessageContent"
+                (plist-put raw :content (plist-get event :new_content)))
+               ("updateMessageEdited"
+                (plist-put raw :edit_date (plist-get event :edit_date)))
+               ("updateMessageInteractionInfo"
+                (plist-put raw :interaction_info
+                           (plist-get event :interaction_info))))
+             (funcall report (etaf-telega-backend-telega--project-message
+                              backend raw)))))))))
+
+(defun etaf-telega-backend-telega--messages-deleted (event)
+  "Report the permanently deleted messages of EVENT to viewing backends."
+  (let ((chat-id (plist-get event :chat_id)))
+    (when (eq t (plist-get event :is_permanent))
+      (dolist (backend etaf-telega-backend-telega-instances)
+        (when (equal (etaf-telega-backend-telega-chat-id backend) chat-id)
+          (etaf-telega-backend-telega--guard
+           backend "删除消息"
+           (lambda ()
+             (when-let* ((report (plist-get (etaf-telega-backend-telega-callbacks
+                                             backend)
+                                            :deleted)))
+               (seq-doseq (id (plist-get event :message_ids))
+                 (remhash (cons chat-id id)
+                          (etaf-telega-backend-telega-raws backend))
+                 (funcall report id))))))))))
+
+(defconst etaf-telega-backend-telega--advices
+  '((telega--on-updateMessageSendFailed :after
+                                        etaf-telega-backend-telega--send-failed)
+    (telega--on-updateMessageContent :after
+                                     etaf-telega-backend-telega--message-changed)
+    (telega--on-updateMessageEdited :after
+                                    etaf-telega-backend-telega--message-changed)
+    (telega--on-updateMessageInteractionInfo
+     :after etaf-telega-backend-telega--message-changed)
+    (telega--on-updateDeleteMessages :after
+                                     etaf-telega-backend-telega--messages-deleted)
+    (telega-chat-at :before-until etaf-telega-backend-telega--chat-at)
+    (telega-msg-at :before-until etaf-telega-backend-telega--msg-at))
+  "Advices the Telega backend installs while any instance is live.")
 
 (cl-defmethod etaf-telega-backend-stop ((backend etaf-telega-backend-telega))
   "Stop observing Telega without closing its server or account."
@@ -746,8 +1113,8 @@ failures are reported without keeping a half-send."
                  #'etaf-telega-backend-telega--chat-update)
     (remove-hook 'telega-chat-post-message-hook
                  #'etaf-telega-backend-telega--message)
-    (advice-remove 'telega--on-updateMessageSendFailed
-                   #'etaf-telega-backend-telega--send-failed)))
+    (dolist (advice etaf-telega-backend-telega--advices)
+      (advice-remove (nth 0 advice) (nth 2 advice)))))
 
 (provide 'etaf-telega-backend)
 ;;; etaf-telega-backend.el ends here

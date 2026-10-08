@@ -4,14 +4,16 @@
 
 ;;; Commentary:
 ;;
-;; The application layer owns the buffer, the command map and the backend
-;; lifecycle.  A paint is a full projection of the model; while the composer
-;; owns a native editing session, paints stay pending so the session keeps
-;; the buffer text, exactly like every other ETAF application.
+;; The client is one buffer that follows Telega's own workflow: a conversation
+;; list screen and a chat screen showing one conversation's history above its
+;; composer.  The buffer mounts one View over the model, so a backend report
+;; updates whichever rows it touches and nothing else.
 ;;
-;; Keys follow Telega's own habits: n/p move between messages, r replies,
-;; e edits, d deletes, c copies, i starts typing, and C-c C-k cancels a reply
-;; or an edit.  j/k (and C-n/C-p) move between conversations.
+;; Point is the selection, as in Telega: moving point onto a row selects its
+;; conversation or message, and every message or chat command acts on the row
+;; under point.  Commands Telega already implements (transient menus,
+;; reactions, forwarding, chat operations) run natively through
+;; `etaf-telega-backend-native' with the row's chat or message as their target.
 
 ;;; Code:
 
@@ -22,8 +24,13 @@
 (require 'etaf-telega-backend)
 (require 'etaf-telega-views)
 
+(declare-function telega-msg-at "telega-msg" (&optional pos))
+(declare-function telega-msg-open-content "telega-msg" (msg &optional clicked-p))
+(declare-function telega-chat-create "telega-chat" (chat-type))
+(declare-function telega-chat-join-by-link "telega-chat" (link))
+
 (defcustom etaf-telega-buffer-name "*ETAF Telegram*"
-  "Buffer name of the mounted client.
+  "Buffer name of the client.
 Do not start it with \"*Telegram\": `telega-buffer-p' claims that prefix and
 Telega's root-buffer cleanup kills every matching buffer."
   :type 'string
@@ -34,426 +41,54 @@ Telega's root-buffer cleanup kills every matching buffer."
   "Return a fresh backend for `etaf-telega-open'.
 Tests bind this to a fake backend factory so no network is touched.")
 
-(defvar-local etaf-telega--model nil
-  "Model shown by the current buffer.")
+(defvar etaf-telega--model nil
+  "Model shared by the conversation list and the chat buffer.")
 
-(defvar-local etaf-telega--backend nil
-  "Backend feeding the current buffer.")
+(defvar etaf-telega--backend nil
+  "Backend feeding `etaf-telega--model'.")
 
-(defvar-local etaf-telega--paint-pending nil
-  "Non-nil when a paint was requested while the composer was editing.")
+(defvar etaf-telega--buffer nil
+  "The mounted client buffer.")
 
-(defvar-local etaf-telega--older-pending nil
+(defvar etaf-telega--history-end nil
+  "Non-nil when the open chat has no older history.")
+
+(defvar etaf-telega--older-pending nil
   "Non-nil while an older history page is in flight.")
 
-(defun etaf-telega--window ()
-  "Return the window showing the current buffer, if any."
-  (get-buffer-window (current-buffer) t))
+(defvar etaf-telega--history-retries 0
+  "Empty answers accepted so far for the open chat's history.")
 
-(defconst etaf-telega-split-threshold 110
-  "Window width in columns at which the client splits its panes.")
+(defvar etaf-telega--jump-pending nil
+  "Non-nil until the opened chat's first page moves point to the composer.")
 
-(defun etaf-telega--split-p ()
-  "Return non-nil when the wide master-detail layout fits the window."
-  (and (etaf-telega--window)
-       (>= (window-body-width (etaf-telega--window))
-           etaf-telega-split-threshold)))
-
-(defun etaf-telega--list-columns ()
-  "Return the conversation column width of the wide layout.
-A width stored by a divider drag wins over the proportional default; both are
-clamped so the message pane keeps a usable minimum."
-  (let* ((body (or (and (etaf-telega--window)
-                        (window-body-width (etaf-telega--window)))
-                   80))
-         (stored (and etaf-telega--model
-                      (etaf-telega-model-list-width etaf-telega--model))))
-    (if stored
-        (max 24 (min stored (max 24 (- body 40))))
-      (max 40 (min 52 (floor (* body 0.38)))))))
-
-(defun etaf-telega--list-ratio ()
-  "Return the conversation column's fraction of the window body."
-  (let* ((body (max 1 (or (and (etaf-telega--window)
-                               (window-body-width (etaf-telega--window)))
-                          80)))
-         (ratio (/ (float (etaf-telega--list-columns)) body)))
-    (max 0.1 (min 0.9 ratio))))
-
-(defun etaf-telega--resize-list (gesture)
-  "Apply splitter drag GESTURE to the conversation column width.
-The divider reports pixel deltas; the resulting cell width is stored in the
-model so both the sidebar and the message pane reproject with one paint."
-  (when (eq (plist-get gesture :phase) 'move)
-    (let* ((model (or etaf-telega--model
-                      (user-error "当前不是 Telegram 客户端")))
-           (window (etaf-telega--window))
-           (delta (or (car-safe (plist-get gesture :delta)) 0))
-           (char (max 1 (if window (frame-char-width (window-frame window)) 8)))
-           (current (etaf-telega--list-columns))
-           (body (max 1 (or (and window (window-body-width window)) 80)))
-           (width (min (max 24 (+ current (round (/ (float delta) char))))
-                       (max 24 (- body 40)))))
-      (etaf-telega-model-set-list-width model width)
-      (etaf-telega--paint))))
-
-(defun etaf-telega--width ()
-  "Return the message cell width for the current window.
-The wide layout reserves the conversation column, so messages wrap to the
-remaining pane; the narrow layout owns the full width."
-  (max 20 (- (or (and (etaf-telega--window) (window-body-width)) 80)
-             (if (etaf-telega--split-p) (+ (etaf-telega--list-columns) 5) 4))))
-
-(defun etaf-telega--list-width ()
-  "Return the conversation-list width in character cells."
-  (max 24 (- (if (etaf-telega--split-p)
-                 (etaf-telega--list-columns)
-               (or (and (etaf-telega--window) (window-body-width)) 84))
-             2)))
-
-(defun etaf-telega--runtime ()
-  "Return the mounted runtime of the current buffer, if any."
-  (etaf-runtime-for-buffer (current-buffer)))
-
-(defun etaf-telega--line-pixels (&optional window)
-  "Return one display line's height in pixels for WINDOW."
-  (let ((window (or window (etaf-telega--window))))
-    (max 1 (if window (frame-char-height (window-frame window)) 16))))
-
-(defun etaf-telega--body-pixels (&optional window)
-  "Return WINDOW's body height in pixels."
-  (let ((window (or window (etaf-telega--window))))
-    (max 1 (if window (window-body-height window t) 400))))
-
-(defun etaf-telega--chat-rows ()
-  "Return the conversation column's visible chat row count.
-The row budget is measured in pixels: every row is two text lines plus its
-separator, and the title bar and filter tabs own the rest of the frame, so
-the list never overflows the window."
-  (let* ((window (etaf-telega--window))
-         (line (etaf-telega--line-pixels window))
-         (chrome (+ (* 4 line) 2))       ; title bar and tabs, each with a border
-         (row (+ (* 2 line) 1))          ; two text lines plus separator
-         (available (- (etaf-telega--body-pixels window) chrome)))
-    (max 1 (floor available row))))
-
-(defconst etaf-telega-filters
-  '((main . "全部") (important . "重要") (online . "在线")
-    (groups . "群组") (channels . "频道") (archived . "归档"))
-  "Chat filters shown in the top tab strip.")
-
-(defun etaf-telega--filter-chats (chats key)
-  "Return CHATS matching filter KEY."
-  (pcase key
-    ('main (cl-remove-if (lambda (chat) (plist-get chat :archived)) chats))
-    ('important (cl-remove-if-not (lambda (chat)
-                                    (> (or (plist-get chat :mention) 0) 0))
-                                  chats))
-    ('online (cl-remove-if-not (lambda (chat) (plist-get chat :online)) chats))
-    ('groups (cl-remove-if-not (lambda (chat)
-                                 (eq (plist-get chat :kind) 'group)) chats))
-    ('channels (cl-remove-if-not (lambda (chat)
-                                   (eq (plist-get chat :kind) 'channel)) chats))
-    ('archived (cl-remove-if-not (lambda (chat)
-                                   (plist-get chat :archived)) chats))
-    (_ chats)))
-
-(defun etaf-telega--filter-items (chats)
-  "Return the filter tab items over CHATS, with unread chat counts."
-  (mapcar (lambda (entry)
-            (let* ((matching (etaf-telega--filter-chats chats (car entry)))
-                   (unread (length (cl-remove-if-not
-                                    (lambda (chat)
-                                      (> (or (plist-get chat :unread) 0) 0))
-                                    matching))))
-              (append (list :key (car entry) :label (cdr entry))
-                      (when (> unread 0) (list :count unread)))))
-          etaf-telega-filters))
-
-(defun etaf-telega--chat-layout ()
-  "Return the sidebar's visible chat slice.
-The slice starts at the model's chat scroll offset; moving the cursor or
-scrolling the list adjusts that offset instead of forcing the selection
-into view on every layout."
-  (let* ((model etaf-telega--model)
-         (chats (if model
-                    (etaf-telega--filter-chats (etaf-telega-model-chats model)
-                                               (etaf-telega-model-filter model))
-                  nil))
-         (total (length chats))
-         (visible (etaf-telega--chat-rows))
-         (start (min (max 0 (if model (etaf-telega-model-chat-scroll model) 0))
-                     (max 0 (- total visible)))))
-    (list :total total :visible visible :start start :end (+ start visible)
-          :chats (cl-subseq chats start (min total (+ start visible))))))
-
-(defun etaf-telega--scroll-chat-to-selection ()
-  "Scroll the conversation column so the selected chat stays visible."
-  (let* ((model etaf-telega--model)
-         (chats (and model
-                     (etaf-telega--filter-chats (etaf-telega-model-chats model)
-                                                (etaf-telega-model-filter model))))
-         (visible (etaf-telega--chat-rows))
-         (index (cl-position (and model (etaf-telega-model-cursor model)) chats
-                             :key (lambda (chat) (plist-get chat :id))
-                             :test #'equal))
-         (start (or (and model (etaf-telega-model-chat-scroll model)) 0)))
-    (when index
-      (cond ((< index start) (setq start index))
-            ((>= index (+ start visible)) (setq start (1+ (- index visible))))))
-    (when model
-      (etaf-telega-model-set-chat-scroll
-       model (min (max 0 start) (max 0 (- (length chats) visible)))))))
-
-(defun etaf-telega--pane-rows ()
-  "Return the message pane's visible row count.
-The pane owns the frame minus the title bar and the composer; both are
-measured in pixels so the newest message never slides below the window."
-  (let* ((window (etaf-telega--window))
-         (line (etaf-telega--line-pixels window))
-         (chrome (+ (* 2 line) 1        ; title bar and its border
-                    (* 3 line) 1))      ; composer padding and its border
-         (available (- (etaf-telega--body-pixels window) chrome)))
-    (max 3 (floor available line))))
-
-(defun etaf-telega--blocks-slice (blocks pane scroll)
-  "Return the visible slice of BLOCKS for PANE rows with SCROLL rows above."
-  (let* ((heights (mapcar (lambda (block) (plist-get block :height)) blocks))
-         (total (apply #'+ heights))
-         (bottom (- total scroll))
-         (top (max 0 (- bottom pane)))
-         (pos 0) start end)
-    (dotimes (i (length blocks))
-      (let ((next (+ pos (nth i heights))))
-        (when (and (< pos bottom) (> next top))
-          (setq start (or start i))
-          (setq end (1+ i)))
-        (setq pos next)))
-    (list :start (or start 0) :end (or end 0)
-          :visible (cl-subseq blocks (or start 0) (or end 0)))))
-
-(defun etaf-telega--layout ()
-  "Return current width, pane rows and the visible message block slice.
-The viewport follows the newest message unless the model holds a scroll
-offset; every value is clamped so the slice always fits the pane."
-  (let* ((width (etaf-telega--width))
-         (pane (etaf-telega--pane-rows))
-         (model etaf-telega--model)
-         (blocks (if model
-                     (etaf-telega-message-blocks
-                      (etaf-telega-model-messages model)
-                      (etaf-telega-model-selected-id model) width)
-                   nil))
-         (heights (mapcar (lambda (block) (plist-get block :height)) blocks))
-         (total-height (apply #'+ heights))
-         (scroll (min (max 0 (if model (etaf-telega-model-scroll model) 0))
-                      (max 0 (- total-height pane))))
-         (slice (etaf-telega--blocks-slice blocks pane scroll)))
-    (list :width width :pane pane :blocks blocks :heights heights
-          :total-height total-height :scroll scroll
-          :start (plist-get slice :start) :end (plist-get slice :end)
-          :visible (plist-get slice :visible))))
-
-(defvar-local etaf-telega--paint-depth 0
-  "Depth of the current synchronous paint batch.")
-
-(defvar-local etaf-telega--paint-dirty nil
-  "Non-nil when a paint was requested inside a batch.")
-
-(defmacro etaf-telega--with-paint-batch (&rest body)
-  "Run BODY and paint the model at most once afterwards.
-Backend callbacks and model writes inside the batch coalesce into the one
-projection that shows their combined result."
-  (declare (indent 0) (debug t))
-  `(let ((etaf-telega--paint-depth (1+ etaf-telega--paint-depth)))
-     (prog1 (progn ,@body)
-       (setq etaf-telega--paint-depth (1- etaf-telega--paint-depth))
-       (when (and (zerop etaf-telega--paint-depth) etaf-telega--paint-dirty)
-         (setq etaf-telega--paint-dirty nil)
-         (etaf-telega--paint-now)))))
-
-(defun etaf-telega--paint ()
-  "Request a projection of the model into the mounted runtime.
-Inside a paint batch the request waits for the batch to finish."
-  (if (> etaf-telega--paint-depth 0)
-      (setq etaf-telega--paint-dirty t)
-    (etaf-telega--paint-now)))
-
-(defun etaf-telega--view ()
-  "Return the current projection of the model.
-The panes receive lazy slices, so the runtime tracks the model refs inside
-each pane and a change re-renders only that pane."
-  (let ((buffer (current-buffer)))
-    (etaf-telega-view etaf-telega--model
-                      (etaf-telega--width)
-                      (etaf-telega--list-width)
-                      (etaf-telega--list-ratio)
-                      (etaf-telega--split-p)
-                      (lambda ()
-                        (with-current-buffer buffer
-                          (plist-get (etaf-telega--layout) :visible)))
-                      (lambda ()
-                        (with-current-buffer buffer
-                          (etaf-telega--chat-layout)))
-                      (lambda ()
-                        (with-current-buffer buffer
-                          (etaf-telega--filter-items
-                           (etaf-telega-model-chats etaf-telega--model))))
-                      (lambda ()
-                        (with-current-buffer buffer
-                          (or (etaf-telega-model-selected-message etaf-telega--model)
-                              (list))))
-                      #'etaf-telega-select-filter
-                      #'etaf-telega-back
-                      #'etaf-telega--run-action
-                      #'etaf-telega--resize-list)))
-
-(defvar-local etaf-telega--remount-pending nil
-  "Non-nil when a rebuild was deferred by a native editing session.")
-
-(defvar-local etaf-telega--surface-rebuild nil
-  "Non-nil when the next paint must rebuild the mounted runtime.
-A publication can fail when an edit landed outside the retained surface's
-owned cells; a fresh mount is the sanctioned recovery.  The flag is consumed
-once so a persistent failure cannot rebuild in a loop.")
-
-(defun etaf-telega--repaint-later (buffer)
-  "Request one repaint of BUFFER outside the current error path."
-  (run-at-time
-   0 nil
-   (lambda (live)
-     (when (buffer-live-p live)
-       (with-current-buffer live
-         (when (and etaf-telega--model (etaf-telega--window))
-           (etaf-telega--paint)))))
-   buffer))
-
-(defun etaf-telega--remount ()
-  "Rebuild the mounted view in place.
-The runtime tracks model refs by itself, so a rebuild is only needed when
-non-reactive state changed (the palette, an explicit reload, a resize).
-A native editing session owns the buffer text, so its rebuild waits until
-the session ends."
-  (when (and etaf-telega--model (etaf-telega--window))
-    (let ((runtime (etaf-telega--runtime)))
-      (if (and runtime (etaf-text-input-active-p runtime))
-          (setq etaf-telega--remount-pending t)
-        (setq etaf-telega--paint-pending nil
-              etaf-telega--remount-pending nil
-              etaf-telega--surface-rebuild nil)
-        (etaf-mount (current-buffer) (lambda () (etaf-telega--view)))
-        (setq-local cursor-type nil)))))
-
-(defun etaf-telega--paint-now ()
-  "Reproject the model into the mounted runtime.
-A mounted runtime already subscribes every view expression to the model
-refs, so a paint drains its pending work instead of rebuilding the whole
-runtime; only the first paint mounts.  A native editing session owns the
-buffer text, so its paint waits until the session ends; a rebuild deferred
-meanwhile lands before the next ordinary flush."
-  (when (and etaf-telega--model (etaf-telega--window))
-    (let ((runtime (etaf-telega--runtime)))
-      (cond
-       ((and runtime (etaf-text-input-active-p runtime))
-        (setq etaf-telega--paint-pending t))
-       ((or etaf-telega--remount-pending etaf-telega--surface-rebuild)
-        (etaf-telega--remount))
-       ((and runtime (etaf-runtime-mounted-p runtime))
-        (setq etaf-telega--paint-pending nil)
-        (condition-case error
-            (etaf-runtime-flush runtime)
-          (error
-           ;; The retained surface refused an update (an edit outside its
-           ;; owned cells invalidates it).  Rebuild once on the next turn
-           ;; instead of failing every later publication.
-           (unless etaf-telega--surface-rebuild
-             (setq etaf-telega--surface-rebuild t)
-             (etaf-telega--repaint-later (current-buffer)))
-           (signal (car error) (cdr error)))))
-       (t (etaf-telega--remount))))))
-
-(defvar-local etaf-telega--history-end nil
-  "Non-nil once the backend reported an empty older page for the chat.")
-
-(defvar-local etaf-telega--history-fill-count 0
-  "Older pages the fill walk loaded since the last chat selection.")
-
-(defvar-local etaf-telega--history-retry-count 0
-  "Times the fill walk retried a stalled newest page for this chat.")
-
-(defvar-local etaf-telega--fill-active nil
-  "Non-nil while the history fill walk is loading pages.
-Backend paints stay deferred so one fill shows one final frame instead of
-one frame per page.")
-
-(defconst etaf-telega--history-fill-limit 40
-  "Most older pages one fill walk loads before it gives up.")
-
-(defconst etaf-telega--history-retry-limit 3
-  "Times a stalled fill walk retries the newest page before giving up.")
+(defconst etaf-telega--history-retry-limit 2
+  "Empty history answers retried before the history counts as complete.
+TDLib answers its first requests for a chat from the local database and may
+return nothing until the server synchronized it.")
 
 (defconst etaf-telega--history-retry-delay 0.8
-  "Seconds before a stalled fill walk asks for the newest page again.")
+  "Seconds before an empty history answer is asked again.")
 
-(defun etaf-telega--history-filled-p ()
-  "Return non-nil when the loaded history already fills the pane."
-  (let ((layout (ignore-errors (etaf-telega--layout))))
-    (and layout
-         (>= (or (plist-get layout :total-height) 0)
-             (or (plist-get layout :pane) 0)))))
+(defvar-local etaf-telega--root-active nil
+  "Non-nil while the client buffer shows the conversation list.")
 
-(defun etaf-telega--retry-history (chat-id)
-  "Re-request CHAT-ID's newest page after a stalled fill walk."
-  (when-let* ((model etaf-telega--model)
-              (chat (etaf-telega-model-chat model)))
-    (when (equal (plist-get chat :id) chat-id)
-      (etaf-telega-backend-select etaf-telega--backend chat-id))))
+(defvar-local etaf-telega--chat-active nil
+  "Non-nil while the client buffer shows a chat.")
 
-(defun etaf-telega--schedule-history-retry (chat-id)
-  "Retry CHAT-ID's newest page after a short delay.
-TDLib can answer an opening request with only its locally cached page and
-finish downloading the rest moments later, so a stalled fill waits for it."
-  (when (and chat-id (< etaf-telega--history-retry-count
-                         etaf-telega--history-retry-limit))
-    (cl-incf etaf-telega--history-retry-count)
-    (let ((buffer (current-buffer)))
-      (run-at-time etaf-telega--history-retry-delay nil
-                   (lambda ()
-                     (when (buffer-live-p buffer)
-                       (with-current-buffer buffer
-                         (etaf-telega--retry-history chat-id))))))
-    t))
+;;;; Helpers
 
-(defun etaf-telega--fill-history ()
-  "Load older pages until the pane is filled or the history ends.
-Opening a conversation must show its history, not only the page TDLib
-happened to have cached; an empty page ends the walk, with a few retries
-of the newest page while a stalled backend may still be downloading it.
-Backend paints are deferred until the walk settles, so one fill shows one
-final frame instead of one frame per page."
-  (let ((chat (etaf-telega-model-chat etaf-telega--model)))
-    (cond
-     ((null chat) nil)
-     ((null (etaf-telega-model-messages etaf-telega--model))
-      (when etaf-telega--fill-active
-        (setq etaf-telega--fill-active nil)
-        (etaf-telega--paint)))
-     ((etaf-telega--history-filled-p)
-      (setq etaf-telega--fill-active nil)
-      (etaf-telega--paint))
-     ((and (not etaf-telega--history-end)
-           (< etaf-telega--history-fill-count etaf-telega--history-fill-limit)
-           (not etaf-telega--older-pending))
-      (setq etaf-telega--fill-active t)
-      (cl-incf etaf-telega--history-fill-count)
-      (etaf-telega-load-more))
-     (etaf-telega--history-end
-      (setq etaf-telega--fill-active nil)
-      (etaf-telega--paint)
-      (etaf-telega--schedule-history-retry (plist-get chat :id)))
-     (t
-      (setq etaf-telega--fill-active nil)
-      (etaf-telega--paint)))))
+(defun etaf-telega--model ()
+  "Return the live model or signal a user error."
+  (or etaf-telega--model (user-error "Telegram 客户端没有打开")))
+
+(defun etaf-telega--runtime (buffer)
+  "Return BUFFER's mounted Runtime, or nil."
+  (and (buffer-live-p buffer) (etaf-runtime-for-buffer buffer)))
+
+(defun etaf-telega--window (buffer)
+  "Return a window showing BUFFER, if any."
+  (and (buffer-live-p buffer) (get-buffer-window buffer t)))
 
 (defconst etaf-telega--status-limit 160
   "Longest status or error text kept in the header.
@@ -471,655 +106,856 @@ message bodies); the header keeps only a readable prefix.")
   "Report ERROR from a backend callback without letting it escape.
 These callbacks run inside Telega's command dispatch; an escaping failure
 makes Telega print the entire failing command, including message bodies, to
-the echo area and can hang Emacs.  The status line carries a clipped reason
-instead, and a dead buffer ends the report."
+the echo area and can hang Emacs.  The status line carries a clipped reason."
   (condition-case nil
       (etaf-telega-model-set-status
        etaf-telega--model
        (format "回调错误：%s" (etaf-telega--clip-text (error-message-string error))))
-    ;; The boundary itself must not raise: the buffer may be dead or the
-    ;; model already released while this callback drains.
     (error nil)))
 
-(defun etaf-telega--callbacks (buffer)
-  "Return backend callbacks that update BUFFER's model."
-  (cl-labels ((report (update)
-                (when (buffer-live-p buffer)
-                  (with-current-buffer buffer
+(defun etaf-telega--row-at (kind &optional buffer)
+  "Return the id of the KIND row under point in BUFFER, or nil."
+  (let ((buffer (or buffer (current-buffer))))
+    (when-let* ((runtime (etaf-telega--runtime buffer)))
+      (with-current-buffer buffer
+        (etaf-telega--ref-id
+         kind (etaf-host-ref-at runtime (point)
+                                (lambda (ref) (etaf-telega--ref-id kind ref))))))))
+
+(defun etaf-telega--goto-ref (buffer ref)
+  "Scroll REF into view and move point, and BUFFER's window point, to it."
+  (when-let* ((runtime (etaf-telega--runtime buffer)))
+    (ignore-errors (etaf-scroll-into-view runtime ref))
+    (when-let* ((position (etaf-host-ref-position runtime ref)))
+      (with-current-buffer buffer (goto-char position))
+      (when-let* ((window (etaf-telega--window buffer)))
+        (set-window-point window position))
+      position)))
+
+(defun etaf-telega--history-scroll (function &rest arguments)
+  "Apply FUNCTION to the history Host and ARGUMENTS when the chat is shown."
+  (when-let* ((runtime (etaf-telega--runtime etaf-telega--buffer))
+              ((and etaf-telega--model
+                    (eq (etaf-telega-model-screen etaf-telega--model) 'chat))))
+    (ignore-errors (apply function runtime 'telega-history arguments))))
+
+(defun etaf-telega--show-newest ()
+  "Scroll the history to its newest message and keep following it."
+  (etaf-telega--history-scroll #'etaf-scroll-to 'end))
+
+;;;; Older history
+
+(defun etaf-telega-load-more ()
+  "Load one page of history older than the oldest loaded message."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (oldest (car (etaf-telega-model-messages model))))
+    (when (and oldest (etaf-telega-model-chat model)
+               (not etaf-telega--older-pending)
+               (not etaf-telega--history-end))
+      (setq etaf-telega--older-pending t)
+      (etaf-telega-backend-history etaf-telega--backend
+                                   :before (plist-get oldest :id)))))
+
+(defun etaf-telega--fill-older ()
+  "Load older history while the history's top line is shown."
+  (when (and etaf-telega--model (not etaf-telega--jump-pending)
+             (eql 0 (etaf-telega--history-scroll #'etaf-scroll-offset)))
+    (with-current-buffer etaf-telega--buffer
+      (etaf-telega-load-more))))
+
+(defun etaf-telega--schedule-fill ()
+  "Check, once the current update is painted, whether older history should load."
+  (etaf-next-tick #'etaf-telega--fill-older))
+
+(defun etaf-telega--history-scrolled (offset)
+  "Load older history when the reader scrolls the history to OFFSET 0."
+  (when (zerop offset)
+    (etaf-telega--schedule-fill)))
+
+(defun etaf-telega--retry (function &rest arguments)
+  "Call FUNCTION with ARGUMENTS after the history retry delay.
+The call is dropped when the client closed or the chat changed meanwhile."
+  (let ((model etaf-telega--model)
+        (chat (and etaf-telega--model (etaf-telega-model-chat etaf-telega--model))))
+    (run-at-time etaf-telega--history-retry-delay nil
+                 (lambda ()
+                   (when (and model (eq model etaf-telega--model)
+                              (equal (plist-get chat :id)
+                                     (plist-get (etaf-telega-model-chat model) :id)))
+                     (apply function arguments))))))
+
+;;;; Backend callbacks
+
+(defun etaf-telega--on-messages (messages)
+  "Show MESSAGES, newest first, as the open chat's newest page."
+  (let ((model etaf-telega--model))
+    (etaf-telega-model-set-messages model (reverse messages))
+    (cond
+     ((and (null messages)
+           (< etaf-telega--history-retries etaf-telega--history-retry-limit))
+      (cl-incf etaf-telega--history-retries)
+      (etaf-telega--retry #'etaf-telega-backend-select etaf-telega--backend
+                          (plist-get (etaf-telega-model-chat model) :id)))
+     (t
+      (setq etaf-telega--history-end (null messages))
+      (when etaf-telega--jump-pending
+        (setq etaf-telega--jump-pending nil)
+        (etaf-telega--show-newest)
+        (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer))
+      (etaf-telega--schedule-fill)))))
+
+(defun etaf-telega--keeping-view (function)
+  "Call FUNCTION, which adds rows above the history, keeping the reader's row.
+When the history was scrolled to its top, the previously oldest message
+stays on the first line afterwards, like a chat app growing upwards; a
+history following its newest message keeps following it."
+  (let* ((oldest (car (etaf-telega-model-messages etaf-telega--model)))
+         (anchor (and oldest (etaf-telega--ref 'message (plist-get oldest :id))))
+         (runtime (etaf-telega--runtime etaf-telega--buffer))
+         (top (eql 0 (etaf-telega--history-scroll #'etaf-scroll-offset))))
+    (prog1 (funcall function)
+      (when (and anchor top runtime)
+        (etaf-next-tick
+         (lambda ()
+           (ignore-errors (etaf-scroll-into-view runtime anchor 'start))))))))
+
+(defun etaf-telega--on-older (messages)
+  "Prepend the older MESSAGES page, newest first."
+  (setq etaf-telega--older-pending nil)
+  (cond
+   (messages
+    (setq etaf-telega--history-retries 0)
+    (etaf-telega--keeping-view
+     (lambda ()
+       (etaf-telega-model-prepend-messages etaf-telega--model (reverse messages))))
+    (etaf-telega--schedule-fill))
+   ((< etaf-telega--history-retries etaf-telega--history-retry-limit)
+    (cl-incf etaf-telega--history-retries)
+    (etaf-telega--retry #'etaf-telega-load-more))
+   (t (setq etaf-telega--history-end t))))
+
+(defun etaf-telega--on-updated (message)
+  "Replace MESSAGE's copy and refresh a viewer still showing its preview."
+  (let ((model etaf-telega--model))
+    (etaf-telega-model-replace-message model message)
+    (let ((viewer (etaf-telega-model-viewer model)))
+      (when (and viewer (equal (plist-get viewer :id) (plist-get message :id))
+                 (not (plist-get viewer :full)))
+        (etaf-telega--show-media message)))))
+
+(defun etaf-telega--callbacks (model)
+  "Return backend callbacks that update MODEL while it is the live model."
+  (cl-labels ((report (function &rest arguments)
+                (lambda (value)
+                  (when (eq model etaf-telega--model)
                     (condition-case error
-                        (progn
-                          (funcall update)
-                          (unless etaf-telega--fill-active
-                            (etaf-telega--paint)))
+                        (apply function (append arguments (list value)))
                       ((error quit)
                        (etaf-telega--report-callback-failure error))))))
-              (clear-draft-for (text)
-                (when (equal (etaf-telega-model-draft etaf-telega--model) text)
-                  (etaf-telega-model-set-draft etaf-telega--model ""))))
-    (list :status (lambda (status)
-                    (report (lambda ()
-                              (etaf-telega-model-set-status
-                               etaf-telega--model
-                               (etaf-telega--clip-text status)))))
-          :me (lambda (me)
-                (report (lambda () (etaf-telega-model-set-me etaf-telega--model me))))
-          :chats (lambda (chats)
-                   (report (lambda ()
-                             (etaf-telega-model-set-chats etaf-telega--model chats))))
-          :messages (lambda (messages)
-                      (report (lambda ()
-                                (setq etaf-telega--history-end (null messages))
-                                (etaf-telega-model-set-messages
-                                 etaf-telega--model (reverse messages))
-                                (etaf-telega--fill-history))))
-          :older (lambda (messages)
-                   (report (lambda ()
-                             (let* ((older (reverse messages))
-                                    (added (apply #'+
-                                                  (mapcar (lambda (block)
-                                                            (plist-get block :height))
-                                                          (etaf-telega-message-blocks
-                                                           older nil
-                                                           (etaf-telega--width))))))
-                               (etaf-telega-model-prepend-messages etaf-telega--model older)
-                               ;; A reader who scrolled away keeps their place;
-                               ;; a follower still watches the newest rows.
-                               (when (> (etaf-telega-model-scroll etaf-telega--model) 0)
-                                 (etaf-telega-model-set-scroll
-                                  etaf-telega--model
-                                  (+ (etaf-telega-model-scroll etaf-telega--model) added)))
-                               (setq etaf-telega--older-pending nil
-                                     etaf-telega--history-end (null messages))
-                               (etaf-telega--fill-history)))))
-          :sent (lambda (message)
-                  (report (lambda ()
-                            (clear-draft-for (plist-get message :text))
-                            (etaf-telega-model-set-compose etaf-telega--model nil)
-                            (etaf-telega-model-append-message etaf-telega--model message)
-                            (when (plist-get message :id)
-                              (etaf-telega-model-set-selected
-                               etaf-telega--model (plist-get message :id))))))
-          :edited (lambda (message)
-                    (report (lambda ()
-                              (clear-draft-for (plist-get message :text))
-                              (etaf-telega-model-set-compose etaf-telega--model nil)
-                              (etaf-telega-model-replace-message
-                               etaf-telega--model message))))
-          :deleted (lambda (id)
-                     (report (lambda ()
-                               (etaf-telega-model-remove-message
-                                etaf-telega--model id))))
-          :message (lambda (message)
-                     (report (lambda ()
-                               (etaf-telega-model-append-message
-                                etaf-telega--model message))))
-          :describe (lambda (describe)
-                      (report (lambda ()
-                                (etaf-telega-model-set-describe
-                                 etaf-telega--model describe))))
-          :error (lambda (message)
-                   (report (lambda ()
-                             (setq etaf-telega--fill-active nil)
-                             (etaf-telega-model-set-status
-                              etaf-telega--model
-                              (format "错误：%s" (etaf-telega--clip-text message)))))))))
+              (finish-compose (message)
+                (when (equal (etaf-telega-model-draft model)
+                             (plist-get message :text))
+                  (etaf-telega-model-set-draft model ""))
+                (etaf-telega-model-set-compose model nil)))
+    (list :status (report (lambda (status)
+                            (etaf-telega-model-set-status
+                             model (etaf-telega--clip-text status))))
+          :me (report #'etaf-telega-model-set-me model)
+          :chats (report #'etaf-telega-model-set-chats model)
+          :messages (report #'etaf-telega--on-messages)
+          :older (report #'etaf-telega--on-older)
+          :sent (report (lambda (message)
+                          (etaf-batch
+                            (finish-compose message)
+                            (etaf-telega-model-append-message model message))
+                          (etaf-telega--show-newest)))
+          :edited (report (lambda (message)
+                            (etaf-batch
+                              (finish-compose message)
+                              (etaf-telega-model-replace-message model message))))
+          :updated (report #'etaf-telega--on-updated)
+          :deleted (report #'etaf-telega-model-remove-message model)
+          :message (report #'etaf-telega-model-append-message model)
+          :error (report (lambda (text)
+                           (setq etaf-telega--older-pending nil)
+                           (etaf-telega-model-set-status
+                            model (format "错误：%s" (etaf-telega--clip-text text))))))))
 
-(defun etaf-telega-open-chat (chat)
-  "Select CHAT and load its recent history."
-  (interactive)
-  (etaf-telega--with-paint-batch
-    (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-          (id (plist-get chat :id)))
-      (etaf-telega-model-select model chat)
-      (setq etaf-telega--history-end nil
-            etaf-telega--history-fill-count 0
-            etaf-telega--history-retry-count 0
-            etaf-telega--fill-active t)
-      (etaf-telega-model-set-cursor model (plist-get chat :id))
-      (etaf-telega--scroll-chat-to-selection)
-      (etaf-telega-model-set-screen model 'chat)
-      (setq etaf-telega--older-pending nil)
-      (etaf-telega--paint)
-      (etaf-telega-backend-select etaf-telega--backend id))))
+;;;; Point selection
 
-(defun etaf-telega-select-chat (id)
-  "Select the chat with ID and load its history."
-  (interactive "nChat id: ")
-  (let ((chat (and etaf-telega--model (etaf-telega-model-chat-by-id
-                                       etaf-telega--model id))))
-    (unless chat (user-error "没有这个对话：%s" id))
-    (etaf-telega-model-set-cursor etaf-telega--model id)
-    (etaf-telega-open-chat chat)))
+(defun etaf-telega--focus-clicked-pane ()
+  "Give keys to the pane a mouse click moved point into.
+Beside each other, the list and chat panes both stay visible, so the
+screen only records which of them owns the keys."
+  (when-let* (((eq this-command 'mouse-set-point))
+              ((etaf-telega-model-chat etaf-telega--model))
+              (runtime (etaf-telega--runtime (current-buffer)))
+              (pane (etaf-host-ref-at runtime (point)
+                                      (lambda (ref)
+                                        (memq ref '(telega-list-pane telega-chat-pane))))))
+    (let ((screen (if (eq pane 'telega-list-pane) 'root 'chat)))
+      (unless (eq screen (etaf-telega-model-screen etaf-telega--model))
+        (etaf-telega--show-screen screen)))))
 
-(defun etaf-telega-info (&optional buffer)
-  "Return visible client facts for BUFFER without network I/O."
-  (with-current-buffer (or buffer (current-buffer))
-    (let* ((model etaf-telega--model)
-           (runtime (etaf-telega--runtime))
-           (chat (and model (etaf-telega-model-chat model)))
-           (compose (and model (etaf-telega-model-compose model))))
-      (list :status (and model (etaf-telega-model-status model))
-            :chats (length (and model (etaf-telega-model-chats model)))
-            :chat (plist-get chat :id)
-            :messages (length (and model (etaf-telega-model-messages model)))
-            :selected (and model (etaf-telega-model-selected-id model))
-            :scroll (and model (etaf-telega-model-scroll model))
-            :screen (and model (etaf-telega-model-screen model))
-            :filter (and model (etaf-telega-model-filter model))
-            :cursor (and model (etaf-telega-model-cursor model))
-            :compose (plist-get compose :kind)
-            :draft (and model (etaf-telega-model-draft model))
-            :split (etaf-telega--split-p)
-            :list-width (and (etaf-telega--split-p) (etaf-telega--list-columns))
-            :editing (and runtime (and (etaf-text-input-active-p runtime) t))))))
+(defun etaf-telega--track-point ()
+  "Select the conversation or message under point."
+  (when etaf-telega--model
+    (etaf-telega--focus-clicked-pane)
+    (cond
+     (etaf-telega--root-active
+      (when-let* ((id (etaf-telega--row-at 'chat)))
+        (unless (equal id (etaf-telega-model-cursor etaf-telega--model))
+          (etaf-telega-model-set-cursor etaf-telega--model id))))
+     (etaf-telega--chat-active
+      (let ((id (etaf-telega--row-at 'message)))
+        (unless (equal id (etaf-telega-model-selected-id etaf-telega--model))
+          (etaf-telega-model-set-selected etaf-telega--model id)))))))
 
-(defun etaf-telega--compose-focus ()
-  "Focus the in-layout composer and begin native editing."
-  (when-let* ((runtime (etaf-telega--runtime)))
-    (etaf-text-input-begin runtime 'telega-composer)))
+(defun etaf-telega--step (ids current delta)
+  "Return the id DELTA steps from CURRENT in IDS, clamped to its ends.
+A nil CURRENT steps from past the last id."
+  (let* ((index (or (cl-position current ids :test #'equal) (length ids)))
+         (next (+ index delta)))
+    (and ids (nth (max 0 (min (1- (length ids)) next)) ids))))
+
+(defun etaf-telega--visible-chat-ids ()
+  "Return the ids of the conversations the list pane shows."
+  (mapcar (lambda (chat) (plist-get chat :id))
+          (etaf-telega--list-chats (etaf-telega--model))))
 
 (defun etaf-telega--move-chat (delta)
-  "Move the chat-list cursor by DELTA entries."
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (chats (etaf-telega--filter-chats (etaf-telega-model-chats model)
-                                           (etaf-telega-model-filter model)))
-         (cursor (etaf-telega-model-cursor model))
-         (index (cl-position cursor chats
-                             :key (lambda (chat) (plist-get chat :id))
-                             :test #'equal))
-         (next (nth (max 0 (min (1- (length chats))
-                                (+ (or index -1) delta)))
-                    chats)))
-    (when next
-      (etaf-telega-model-set-cursor model (plist-get next :id))
-      (etaf-telega--scroll-chat-to-selection)
-      (etaf-telega--paint))))
-
-(defun etaf-telega-open-selected-chat ()
-  "Open the conversation selected in the chat list."
-  (interactive)
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (cursor (etaf-telega-model-cursor model))
-         (chat (and cursor (etaf-telega-model-chat-by-id model cursor))))
-    (when chat (etaf-telega-open-chat chat))))
-
-(defun etaf-telega-return ()
-  "Open the selected conversation, or reload the open one."
-  (interactive)
-  (if (eq (etaf-telega-model-screen etaf-telega--model) 'root)
-      (etaf-telega-open-selected-chat)
-    (etaf-telega-reload-chat)))
+  "Move point DELTA conversations in the list."
+  (let* ((model (etaf-telega--model))
+         (ids (etaf-telega--visible-chat-ids))
+         (current (or (etaf-telega--row-at 'chat) (etaf-telega-model-cursor model)))
+         (target (if (member current ids)
+                     (etaf-telega--step ids current delta)
+                   (car ids))))
+    (when target
+      (etaf-telega-model-set-cursor model target)
+      (etaf-telega--goto-ref (current-buffer) (etaf-telega--ref 'chat target)))))
 
 (defun etaf-telega-next-chat ()
-  "Select the next chat in the list."
+  "Move to the next conversation."
   (interactive)
   (etaf-telega--move-chat 1))
 
 (defun etaf-telega-previous-chat ()
-  "Select the previous chat in the list."
+  "Move to the previous conversation."
   (interactive)
   (etaf-telega--move-chat -1))
 
-(defun etaf-telega-first-chat ()
-  "Select the first conversation in the chat list."
-  (interactive)
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (chats (etaf-telega-model-chats model)))
-    (when chats (etaf-telega-open-chat (car chats)))))
-
-(defun etaf-telega-last-chat ()
-  "Select the last conversation in the chat list."
-  (interactive)
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (chats (etaf-telega-model-chats model)))
-    (when chats (etaf-telega-open-chat (car (last chats))))))
-
-(defun etaf-telega-reload-chat ()
-  "Reload the selected chat's history."
-  (interactive)
-  (let ((chat (etaf-telega-model-chat etaf-telega--model)))
-    (when chat (etaf-telega-open-chat chat))))
-
-(defun etaf-telega-load-more ()
-  "Load an older page of the selected chat's history."
-  (interactive)
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (messages (etaf-telega-model-messages model)))
-    (unless (etaf-telega-model-chat model) (user-error "先选择一个对话"))
-    (when (and messages (not etaf-telega--older-pending))
-      (setq etaf-telega--older-pending t)
-      (etaf-telega-backend-history etaf-telega--backend
-                                   :before (plist-get (car messages) :id)))))
-
-(defun etaf-telega--scroll-to-selection ()
-  "Adjust the viewport so the selected message's block is visible."
-  (let* ((layout (etaf-telega--layout))
-         (blocks (plist-get layout :blocks))
-         (heights (plist-get layout :heights))
-         (selected (etaf-telega-model-selected-id etaf-telega--model))
-         (pane (plist-get layout :pane))
-         (total (plist-get layout :total-height))
-         (index (cl-position selected blocks
-                             :key (lambda (block)
-                                    (plist-get (plist-get block :message) :id))
-                             :test #'equal)))
-    (when index
-      (let ((top 0))
-        (dotimes (i index) (setq top (+ top (nth i heights))))
-        (let* ((bottom (+ top (nth index heights)))
-               (view-bottom (- total (plist-get layout :scroll)))
-               (view-top (max 0 (- view-bottom pane))))
-          (cond ((< top view-top)
-                 (etaf-telega-model-set-scroll
-                  etaf-telega--model
-                  (max 0 (- total (min total (+ top pane))))))
-                ((> bottom view-bottom)
-                 (etaf-telega-model-set-scroll
-                  etaf-telega--model (max 0 (- total bottom))))))))))
-
-(defun etaf-telega--selection-at-oldest-p ()
-  "Return non-nil when the selected message is the oldest loaded one."
-  (let ((model etaf-telega--model)
-        (messages (etaf-telega-model-messages etaf-telega--model)))
-    (and model messages
-         (equal (etaf-telega-model-selected-id model)
-                (plist-get (car messages) :id)))))
-
 (defun etaf-telega--move-message (delta)
-  "Move the message selection by DELTA messages.
-Walking past the oldest loaded message loads an older page, like Telega's
-chat buffer, so paging never strands the reader at a page boundary."
-  (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
-    (etaf-telega-model-move-selection model delta)
-    (etaf-telega--scroll-to-selection)
-    (when (and (< delta 0)
-               (not etaf-telega--history-end)
-               (etaf-telega--selection-at-oldest-p))
-      (etaf-telega-load-more))
-    (etaf-telega--paint)))
+  "Move point DELTA messages; past the newest message lands on the composer."
+  (let* ((model (etaf-telega--model))
+         (ids (mapcar (lambda (message) (plist-get message :id))
+                      (etaf-telega-model-messages model)))
+         (current (etaf-telega--row-at 'message))
+         (index (or (cl-position current ids :test #'equal) (length ids)))
+         (next (+ index delta)))
+    (cond
+     ((null ids))
+     ((>= next (length ids))
+      (etaf-telega-model-set-selected model nil)
+      (etaf-telega--goto-ref (current-buffer) 'telega-composer))
+     (t
+      (let ((target (nth (max 0 next) ids)))
+        (when (< next 0) (etaf-telega-load-more))
+        (etaf-telega-model-set-selected model target)
+        (etaf-telega--goto-ref (current-buffer)
+                               (etaf-telega--ref 'message target)))))))
 
-(defun etaf-telega--scroll-to (offset)
-  "Set the message viewport OFFSET, clamped to the loaded history."
-  (let ((layout (etaf-telega--layout)))
-    (etaf-telega-model-set-scroll
-     etaf-telega--model
-     (min (max 0 (or offset 0))
-          (max 0 (- (plist-get layout :total-height) (plist-get layout :pane)))))
-    (etaf-telega--paint)))
-
-(defun etaf-telega-page-up (&optional rows)
-  "Scroll the message viewport towards older messages by ROWS.
-At the top of the loaded history, load an older page."
-  (interactive)
-  (let* ((layout (etaf-telega--layout))
-         (step (or rows (max 1 (1- (plist-get layout :pane))))))
-    (etaf-telega--scroll-to (+ (plist-get layout :scroll) step))
-    (when (and (zerop (plist-get (etaf-telega--layout) :start))
-               (plist-get (etaf-telega--layout) :blocks))
-      (etaf-telega-load-more))))
-
-(defun etaf-telega-page-down (&optional rows)
-  "Scroll the message viewport towards newer messages by ROWS."
-  (interactive)
-  (let* ((layout (etaf-telega--layout))
-         (step (or rows (max 1 (1- (plist-get layout :pane))))))
-    (etaf-telega--scroll-to (- (plist-get layout :scroll) step))))
-
-(defun etaf-telega-scroll-chats (delta)
-  "Scroll the conversation column by DELTA rows.
-Positive DELTA walks toward later conversations; the selected chat is not
-moved, so the wheel browses the list without changing the selection."
-  (let* ((model etaf-telega--model)
-         (chats (and model
-                     (etaf-telega--filter-chats (etaf-telega-model-chats model)
-                                                (etaf-telega-model-filter model))))
-         (visible (etaf-telega--chat-rows))
-         (start (min (max 0 (+ (or (and model (etaf-telega-model-chat-scroll model)) 0)
-                               delta))
-                     (max 0 (- (length chats) visible)))))
-    (when model
-      (etaf-telega-model-set-chat-scroll model start)
-      (etaf-telega--paint))))
-
-(defun etaf-telega-scroll-messages (delta)
-  "Scroll the message viewport by DELTA rows.
-Positive DELTA walks toward newer messages; scrolling past the top of the
-loaded history loads an older page."
-  (let ((layout (etaf-telega--layout)))
-    (etaf-telega--scroll-to
-     (- (plist-get layout :scroll) (* delta 3)))
-    (when (and (> delta 0)
-               (zerop (plist-get (etaf-telega--layout) :start))
-               (plist-get (etaf-telega--layout) :blocks))
-      (etaf-telega-load-more))))
-
-(defun etaf-telega--wheel (event delta)
-  "Scroll the pane under EVENT by DELTA rows (positive = down)."
-  (let* ((position (event-start event))
-         (window (posn-window position)))
-    (when (and (window-live-p window) (null (posn-area position)))
-      (with-current-buffer (window-buffer window)
-        (when etaf-telega--model
-          (let* ((pixels (posn-x-y position))
-                 (column (and (consp pixels)
-                              (floor (/ (float (car pixels))
-                                        (window-font-width window)))))
-                 (screen (etaf-telega-model-screen etaf-telega--model)))
-            (cond
-             ((eq screen 'root) (etaf-telega-scroll-chats (* delta 3)))
-             ((and (etaf-telega--split-p)
-                   column
-                   (< column (etaf-telega--list-width)))
-              (etaf-telega-scroll-chats (* delta 3)))
-             (t (etaf-telega-scroll-messages delta)))))))))
-
-(defun etaf-telega-wheel-up (event)
-  "Scroll the pane under EVENT towards older content."
-  (interactive "e")
-  (etaf-telega--wheel event -1))
-
-(defun etaf-telega-wheel-down (event)
-  "Scroll the pane under EVENT towards newer content."
-  (interactive "e")
-  (etaf-telega--wheel event 1))
-
-(defun etaf-telega-follow ()
-  "Scroll the message viewport to the newest message."
-  (interactive)
-  (etaf-telega--scroll-to 0))
+(defun etaf-telega-show-message (id)
+  "Select the open chat's message ID and move point to it."
+  (interactive (list (etaf-telega--row-at 'message)))
+  (when-let* ((model (etaf-telega--model))
+              ((cl-find id (etaf-telega-model-messages model)
+                        :key (lambda (message) (plist-get message :id))
+                        :test #'equal)))
+    (etaf-telega--show-screen 'chat)
+    (etaf-telega-model-set-selected model id)
+    (etaf-telega--goto-ref etaf-telega--buffer (etaf-telega--ref 'message id))))
 
 (defun etaf-telega-next-message ()
-  "Select the next message in the conversation."
+  "Move to the next message, or to the composer after the newest one."
   (interactive)
   (etaf-telega--move-message 1))
 
 (defun etaf-telega-previous-message ()
-  "Select the previous message in the conversation."
+  "Move to the previous message, loading older history at the top."
   (interactive)
   (etaf-telega--move-message -1))
 
-(defun etaf-telega-compose ()
-  "Focus the composer for typing."
-  (interactive)
-  (etaf-telega--compose-focus))
+;;;; Keys
 
-(defun etaf-telega-selected-message ()
-  "Return the selected message or signal a user error."
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (message (etaf-telega-model-selected-message model)))
-    (or message (user-error "先选中一条消息"))))
+(defvar etaf-telega-root-native-keys
+  '(("i" . telega-describe-chat) ("h" . telega-describe-chat)
+    ("a" . telega-chat-add-member) ("o" . telega-transient-chat-operate)
+    ("r" . telega-chat-toggle-read) ("d" . telega-transient-chat-delete)
+    ("P" . telega-chat-toggle-pin) ("^" . telega-chat-toggle-pin)
+    ("DEL" . telega-chat-delete))
+  "Keys of the conversation list that run Telega's own chat commands.
+Each command operates on the conversation under point.")
+
+(defvar etaf-telega-chat-native-keys
+  '(("c" . telega-msg-copy-dwim) ("d" . telega-transient-msg-delete)
+    ("DEL" . telega-transient-msg-delete) ("f" . telega-transient-msg-forward)
+    ("l" . telega-msg-copy-link) ("s" . telega-transient-msg-save)
+    ("t" . telega-transient-msg-translate) ("!" . telega-msg-add-reaction)
+    ("^" . telega-transient-msg-pin-toggle) ("*" . telega-msg-favorite-toggle)
+    ("T" . telega-msg-open-thread-or-topic) ("=" . telega-msg-diff-edits)
+    ("B" . telega-msg-ban-sender) ("R" . telega-msg-resend)
+    ("o" . telega-transient-msg-operate) ("I" . telega-describe-message))
+  "Keys of the chat buffer that run Telega's own message commands.
+Each command operates on the message under point.")
+
+(defun etaf-telega--native-map (keys map)
+  "Bind every key of KEYS in MAP to `etaf-telega-native'."
+  (dolist (entry keys)
+    (define-key map (kbd (car entry)) #'etaf-telega-native))
+  map)
+
+(defvar etaf-telega-root-map
+  (let ((map (make-sparse-keymap)))
+    (etaf-telega--native-map etaf-telega-root-native-keys map)
+    (dolist (pair '(("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
+                    ("RET" . etaf-telega-open-chat)
+                    ("/" . etaf-telega-search) ("s" . etaf-telega-search)
+                    ("J" . telega-chat-join-by-link)
+                    ("N" . telega-chat-create) ("+" . telega-chat-create)
+                    ("T" . etaf-telega-toggle-theme)
+                    ("q" . bury-buffer) ("Q" . etaf-telega-close)))
+      (define-key map (kbd (car pair)) (cdr pair)))
+    map)
+  "Keys of the conversation list screen, after Telega's root buffer.")
+
+(defvar etaf-telega-chat-map
+  (let ((map (make-sparse-keymap)))
+    (etaf-telega--native-map etaf-telega-chat-native-keys map)
+    (dolist (pair '(("n" . etaf-telega-next-message)
+                    ("p" . etaf-telega-previous-message)
+                    ("i" . etaf-telega-compose) ("RET" . etaf-telega-activate)
+                    (">" . etaf-telega-jump-newest) ("M->" . etaf-telega-jump-newest)
+                    ("+" . etaf-telega-react)
+                    ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
+                    ("C-c C-k" . etaf-telega-cancel-compose)
+                    ("g" . etaf-telega-reload-chat) ("M-<" . etaf-telega-load-more)
+                    ("/" . etaf-telega-chat-search)
+                    ("C-c i" . etaf-telega-toggle-details)
+                    ("q" . etaf-telega-back) ("Q" . etaf-telega-close)))
+      (define-key map (kbd (car pair)) (cdr pair)))
+    map)
+  "Keys of the chat screen, after Telega's chat buffer.")
+
+(defun etaf-telega--install-keys ()
+  "Give the current screen's keys precedence over the mounted buffer's keys."
+  (setq-local emulation-mode-map-alists
+              (cons (list (cons 'etaf-telega--root-active etaf-telega-root-map)
+                          (cons 'etaf-telega--chat-active etaf-telega-chat-map))
+                    emulation-mode-map-alists)))
+
+;;;; Conversation list commands
+
+(defun etaf-telega--show-screen (screen)
+  "Show SCREEN, `root' or `chat', and give its keys precedence."
+  (etaf-telega-model-set-screen (etaf-telega--model) screen)
+  (when (buffer-live-p etaf-telega--buffer)
+    (with-current-buffer etaf-telega--buffer
+      (setq etaf-telega--root-active (eq screen 'root)
+            etaf-telega--chat-active (eq screen 'chat)))))
+
+(defun etaf-telega-open-chat (id)
+  "Open the conversation with ID on the chat screen."
+  (interactive (list (or (etaf-telega--row-at 'chat)
+                         (and etaf-telega--model
+                              (etaf-telega-model-cursor etaf-telega--model))
+                         (user-error "先把光标移到一个对话上"))))
+  (let* ((model (etaf-telega--model))
+         (chat (or (etaf-telega-model-chat-by-id model id)
+                   (user-error "没有这个对话：%s" id)))
+         (previous (etaf-telega-model-chat model))
+         (searching (etaf-telega-model-searching model)))
+    (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+      (etaf-text-input-end t))
+    (setq etaf-telega--history-end nil
+          etaf-telega--older-pending nil
+          etaf-telega--history-retries 0
+          etaf-telega--jump-pending t)
+    (etaf-batch
+      (when searching
+        (etaf-telega-model-add-recent model id)
+        (etaf-telega-model-set-search model nil))
+      (unless (equal (plist-get previous :id) id)
+        (etaf-telega-model-set-chat-search model nil)
+        (etaf-telega-model-set-draft model ""))
+      (etaf-telega-model-select model chat)
+      (etaf-telega-model-set-cursor model id)
+      (etaf-telega--show-screen 'chat))
+    (etaf-telega-backend-select etaf-telega--backend id)
+    id))
+
+;;;; Search
+
+(defun etaf-telega--end-editing ()
+  "Leave the active text input, keeping its text."
+  (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+    (etaf-text-input-end 'blur)))
+
+(defun etaf-telega-search ()
+  "Show the list search and begin typing its query (/ or s on the list).
+On a compact chat screen the client first returns to the list."
+  (interactive)
+  (let ((model (etaf-telega--model))
+        (runtime (etaf-telega--runtime etaf-telega--buffer)))
+    (unless (etaf-host-ref-position runtime 'telega-list-pane)
+      (etaf-telega-back))
+    (etaf-telega-model-set-search model t (etaf-telega-model-search model))
+    (with-current-buffer etaf-telega--buffer
+      (etaf-text-input-begin runtime 'telega-search))))
+
+(defun etaf-telega-search-exit ()
+  "Leave the list search, clearing its query, and show the list again."
+  (interactive)
+  (etaf-telega--end-editing)
+  (etaf-telega-model-set-search (etaf-telega--model) nil))
+
+(defun etaf-telega--search-focused ()
+  "Show the list search when its field begins editing."
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-searching model)
+      (etaf-telega-model-set-search model t (etaf-telega-model-search model)))))
+
+(defun etaf-telega--search-submit (_query)
+  "Open the first conversation the list search shows."
+  (if-let* ((id (car (etaf-telega--visible-chat-ids))))
+      (etaf-telega-open-chat id)
+    (message "没有匹配的对话")))
+
+(defun etaf-telega--search-cancelled (_query)
+  "Leave the list search after its field was cancelled."
+  (etaf-telega-model-set-search (etaf-telega--model) nil))
+
+(defun etaf-telega--search-kind-select (kind)
+  "Narrow the list search to conversations of KIND."
+  (etaf-telega-model-set-search-kind (etaf-telega--model) kind))
+
+(defun etaf-telega-search-clear-recent ()
+  "Forget the recently opened search results."
+  (interactive)
+  (etaf-telega-model-clear-recent (etaf-telega--model)))
+
+(defun etaf-telega-chat-search ()
+  "Search the open conversation's loaded messages, typing the query (/)."
+  (interactive)
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-chat model)
+      (user-error "先打开一个对话"))
+    (unless (etaf-telega-model-chat-search model)
+      (etaf-telega-model-set-chat-search model ""))
+    (with-current-buffer etaf-telega--buffer
+      (etaf-text-input-begin (etaf-telega--runtime etaf-telega--buffer)
+                             'telega-chat-search))))
+
+(defun etaf-telega-chat-search-exit ()
+  "Close the message search and show the whole history again."
+  (interactive)
+  (etaf-telega--end-editing)
+  (etaf-telega-model-set-chat-search (etaf-telega--model) nil))
+
+(defun etaf-telega--chat-search-cancelled (_query)
+  "Close the message search after its field was cancelled."
+  (etaf-telega-model-set-chat-search (etaf-telega--model) nil))
+
+(defun etaf-telega-toggle-details ()
+  "Show or hide the open conversation's details pane (C-c i)."
+  (interactive)
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-chat model)
+      (user-error "先打开一个对话"))
+    (etaf-telega-model-set-details model (not (etaf-telega-model-details model)))))
+
+(defun etaf-telega--list-menu-select (key)
+  "Run the list menu item KEY.
+Commands that remount or close the client run after the menu's own event."
+  (pcase key
+    ('create (call-interactively #'telega-chat-create))
+    ('join (call-interactively #'telega-chat-join-by-link))
+    ('theme (run-at-time 0 nil #'etaf-telega-toggle-theme))
+    ('close (run-at-time 0 nil #'etaf-telega-close))))
+
+(defun etaf-telega--chat-menu-select (key)
+  "Run the chat menu item KEY."
+  (pcase key
+    ('details (etaf-telega-toggle-details))
+    ('search (etaf-telega-chat-search))
+    ('newest (etaf-telega-jump-newest))
+    ('reload (etaf-telega-reload-chat))
+    ('back (etaf-telega-back))))
+
+;;;; Filters
+
+(defun etaf-telega-select-filter (key)
+  "Show the conversations of filter KEY."
+  (interactive
+   (list (intern (completing-read "分组："
+                                  (mapcar (lambda (entry) (symbol-name (car entry)))
+                                          etaf-telega-filters)
+                                  nil t))))
+  (etaf-telega-model-set-filter (etaf-telega--model) key))
+
+(defun etaf-telega-native (command)
+  "Run Telega's COMMAND on the conversation or message under point.
+Called from a key of `etaf-telega-root-native-keys' or
+`etaf-telega-chat-native-keys', COMMAND is that key's command."
+  (interactive
+   (let ((key (key-description (this-command-keys-vector))))
+     (list (or (cdr (assoc key (if etaf-telega--chat-active
+                                   etaf-telega-chat-native-keys
+                                 etaf-telega-root-native-keys)))
+               (user-error "%s 没有对应的 Telega 命令" key)))))
+  (let ((model (etaf-telega--model)))
+    (if etaf-telega--chat-active
+        (let ((id (or (etaf-telega--row-at 'message)
+                      (user-error "先把光标移到一条消息上"))))
+          (etaf-telega-backend-native etaf-telega--backend command
+                                      (plist-get (etaf-telega-model-chat model) :id)
+                                      id))
+      (etaf-telega-backend-native etaf-telega--backend command
+                                  (or (etaf-telega--row-at 'chat)
+                                      (etaf-telega-model-cursor model)
+                                      (user-error "先把光标移到一个对话上"))))))
+
+;;;; Chat buffer commands
+
+(defun etaf-telega--open-content ()
+  "Open the content of Telega's message at point like clicking it."
+  (interactive)
+  (telega-msg-open-content (telega-msg-at (point)) t))
+
+(defconst etaf-telega--viewable-kinds '(photo video animation sticker)
+  "Message kinds the in-buffer media viewer shows.")
+
+(defun etaf-telega--media-ids ()
+  "Return the ids of the open chat's viewable messages, oldest first."
+  (cl-loop for message in (etaf-telega-model-messages (etaf-telega--model))
+           when (and (memq (plist-get message :kind) etaf-telega--viewable-kinds)
+                     (plist-get message :media))
+           collect (plist-get message :id)))
+
+(defun etaf-telega--show-media (message &optional source progress)
+  "Show MESSAGE's media in the viewer, playing SOURCE once it is local.
+Until the full file arrives the viewer shows the message's preview image
+and the download PROGRESS, a fraction, when known."
+  (let* ((model (etaf-telega--model))
+         (id (plist-get message :id))
+         (media (plist-get message :media))
+         (video (memq (plist-get message :kind) '(video animation)))
+         (ids (etaf-telega--media-ids))
+         (index (cl-position id ids :test #'equal)))
+    (etaf-telega-model-set-viewer
+     model
+     (list :id id
+           :kind (if (and video source) 'video 'image)
+           :src (or source (plist-get media :src))
+           :full (and source t)
+           :size (and (plist-get media :width) (plist-get media :height)
+                      (cons (plist-get media :width) (plist-get media :height)))
+           :title (etaf-telega--plain-text (or (plist-get message :sender) ""))
+           :subtitle (concat (string-trim
+                              (concat (or (plist-get message :date) "") " "
+                                      (or (plist-get message :time) "")))
+                             (if (and (not source) progress)
+                                 (format " · 正在下载 %d%%" (round (* 100 progress)))
+                               ""))
+           :caption (let ((text (plist-get message :text)))
+                      (and text (not (string-empty-p text)) text))
+           :previous (and index (> index 0))
+           :next (and index (< index (1- (length ids))))))))
+
+(defun etaf-telega-open-media (id)
+  "Preview message ID's photo or play its video in the in-buffer viewer.
+Other attachments, such as files and voice notes, open through Telega."
+  (interactive (list (or (etaf-telega--row-at 'message)
+                         (user-error "先把光标移到一条消息上"))))
+  (let* ((model (etaf-telega--model))
+         (message (or (etaf-telega-model-message-by-id model id)
+                      (user-error "没有这条消息：%s" id))))
+    (if (and (memq (plist-get message :kind) etaf-telega--viewable-kinds)
+             (plist-get message :media))
+        (progn
+          (etaf-telega-model-set-selected model id)
+          (etaf-telega--show-media message)
+          (etaf-telega-backend-media
+           etaf-telega--backend id
+           (lambda (progress source)
+             (when-let* ((model etaf-telega--model)
+                         ((equal (plist-get (etaf-telega-model-viewer model) :id) id))
+                         (current (etaf-telega-model-message-by-id model id)))
+               (etaf-telega--show-media current source progress)))))
+      (etaf-telega-backend-native etaf-telega--backend #'etaf-telega--open-content
+                                  (plist-get (etaf-telega-model-chat model) :id)
+                                  id))))
+
+(defun etaf-telega--viewer-step (delta)
+  "Show the viewable message DELTA steps from the viewer's message."
+  (when-let* ((viewer (etaf-telega-model-viewer (etaf-telega--model)))
+              (ids (etaf-telega--media-ids))
+              (index (cl-position (plist-get viewer :id) ids :test #'equal))
+              ((< -1 (+ index delta) (length ids))))
+    (etaf-telega-open-media (nth (+ index delta) ids))))
+
+(defun etaf-telega-close-media ()
+  "Close the media viewer and return to the message it showed."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (id (plist-get (etaf-telega-model-viewer model) :id)))
+    (etaf-telega-model-set-viewer model nil)
+    (when id
+      (etaf-telega--goto-ref etaf-telega--buffer (etaf-telega--ref 'message id)))))
+
+(defun etaf-telega-react (id key)
+  "Toggle reaction KEY, an emoji string, on message ID.
+Interactively, pick the reaction for the message under point."
+  (interactive
+   (let ((id (or (etaf-telega--row-at 'message)
+                 (user-error "先把光标移到一条消息上"))))
+     (list id (completing-read "表情：" (mapcar #'car etaf-telega-reaction-choices)
+                               nil t))))
+  (etaf-telega--model)
+  (etaf-telega-backend-react etaf-telega--backend id key))
+
+(defun etaf-telega-swipe (direction)
+  "Handle a two-finger swipe in DIRECTION, `left' or `right'.
+A rightward swipe in a chat goes back to the conversation list; on the list
+a swipe shows the neighbouring filter tab."
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-viewer model)
+      (if (eq (etaf-telega-model-screen model) 'chat)
+          (when (eq direction 'right) (etaf-telega-back))
+        (let* ((keys (mapcar #'car etaf-telega-filters))
+               (index (or (cl-position (etaf-telega-model-filter model) keys) 0))
+               (next (+ index (if (eq direction 'left) 1 -1))))
+          (when (< -1 next (length keys))
+            (etaf-telega-select-filter (nth next keys))))))))
+
+(defun etaf-telega-activate ()
+  "Open the media of the message at point, or start typing elsewhere."
+  (interactive)
+  (let* ((id (etaf-telega--row-at 'message))
+         (message (and id (cl-find id (etaf-telega-model-messages
+                                       (etaf-telega--model))
+                                   :key (lambda (item) (plist-get item :id))
+                                   :test #'equal))))
+    (if (and message (not (memq (plist-get message :kind) '(nil text))))
+        (etaf-telega-open-media id)
+      (etaf-telega-compose))))
+
+(defun etaf-telega-jump-newest ()
+  "Show the newest messages and select the newest one."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (newest (car (last (etaf-telega-model-messages model)))))
+    (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+      (etaf-text-input-end t))
+    (etaf-telega--show-newest)
+    (when newest
+      (etaf-telega-model-set-selected model (plist-get newest :id))
+      (etaf-telega--goto-ref etaf-telega--buffer
+                             (etaf-telega--ref 'message (plist-get newest :id))))))
+
+(defun etaf-telega-compose ()
+  "Start typing in the composer."
+  (interactive)
+  (unless (etaf-telega-model-chat (etaf-telega--model))
+    (user-error "先选择一个对话"))
+  (let ((runtime (etaf-telega--runtime etaf-telega--buffer)))
+    (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer)
+    (etaf-text-input-begin runtime 'telega-composer)))
+
+(defun etaf-telega--message-at-point ()
+  "Return the message under point or signal a user error."
+  (let* ((model (etaf-telega--model))
+         (id (or (etaf-telega--row-at 'message) (etaf-telega-model-selected-id model))))
+    (or (and id (etaf-telega-model-message-by-id model id))
+        (user-error "先把光标移到一条消息上"))))
 
 (defun etaf-telega-reply ()
-  "Compose a reply to the selected message."
+  "Compose a reply to the message under point."
   (interactive)
-  (let ((message (etaf-telega-selected-message)))
+  (let ((message (etaf-telega--message-at-point)))
     (etaf-telega-model-set-compose etaf-telega--model
                                    (list :kind 'reply :target message))
-    (etaf-telega--paint)
-    (etaf-telega--compose-focus)))
+    (etaf-telega-compose)))
 
 (defun etaf-telega-edit ()
-  "Edit the selected outgoing message in the composer."
+  "Edit the outgoing message under point in the composer."
   (interactive)
-  (let* ((message (etaf-telega-selected-message))
-         (model etaf-telega--model))
+  (let ((message (etaf-telega--message-at-point))
+        (model etaf-telega--model))
     (unless (plist-get message :outgoing)
       (user-error "只能编辑自己发送的消息"))
-    (etaf-telega-model-set-compose
-     model (list :kind 'edit :target message :draft (etaf-telega-model-draft model)))
-    (etaf-telega-model-set-draft model (or (plist-get message :text) ""))
-    (etaf-telega--paint)
-    (etaf-telega--compose-focus)))
+    (etaf-batch
+      (etaf-telega-model-set-compose
+       model (list :kind 'edit :target message :draft (etaf-telega-model-draft model)))
+      (etaf-telega-model-set-draft model (or (plist-get message :text) "")))
+    (etaf-telega-compose)))
 
 (defun etaf-telega-cancel-compose ()
   "Cancel the active reply or edit.
 An edit restores the draft that was present before editing began."
   (interactive)
-  (let ((model etaf-telega--model)
-        (compose (and etaf-telega--model (etaf-telega-model-compose etaf-telega--model))))
+  (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+    (etaf-text-input-end t))
+  (let* ((model (etaf-telega--model))
+         (compose (etaf-telega-model-compose model)))
     (when compose
-      (when (eq (plist-get compose :kind) 'edit)
-        (etaf-telega-model-set-draft model (or (plist-get compose :draft) "")))
-      (etaf-telega-model-set-compose model nil)
-      (etaf-telega--paint))))
-
-(defun etaf-telega-copy ()
-  "Copy the selected message's text."
-  (interactive)
-  (let ((message (etaf-telega-selected-message)))
-    (kill-new (or (plist-get message :text) ""))
-    (etaf-telega-model-set-status etaf-telega--model "已复制消息")
-    (etaf-telega--paint)))
-
-(defun etaf-telega-delete ()
-  "Delete the selected message after confirmation."
-  (interactive)
-  (let ((message (etaf-telega-selected-message)))
-    (when (yes-or-no-p "删除这条消息？")
-      (etaf-telega--with-paint-batch
-        (etaf-telega-backend-delete etaf-telega--backend message)
-        (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
-          (etaf-telega--paint))))))
+      (etaf-batch
+        (when (eq (plist-get compose :kind) 'edit)
+          (etaf-telega-model-set-draft model (or (plist-get compose :draft) "")))
+        (etaf-telega-model-set-compose model nil)))))
 
 (defun etaf-telega-send (text)
-  "Send TEXT to the selected chat, honouring the compose state.
-A reply carries its quoted message; an edit replaces the selected message.
-The draft stays until the backend accepts it, so a failure keeps the text
-available for retry."
-  (interactive)
-  (unless (etaf-telega-model-chat etaf-telega--model)
-    (user-error "先选择一个对话"))
-  (etaf-telega--with-paint-batch
+  "Send TEXT to the open chat, honouring the compose state.
+A reply carries its quoted message; an edit replaces its target.  The draft
+stays until the backend accepts it, so a failure keeps the text for retry."
+  (let* ((model (etaf-telega--model))
+         (compose (etaf-telega-model-compose model)))
+    (unless (etaf-telega-model-chat model)
+      (user-error "先选择一个对话"))
     (unless (string-empty-p (string-trim text))
-      (let ((compose (etaf-telega-model-compose etaf-telega--model)))
-        (pcase (plist-get compose :kind)
-          ('reply (etaf-telega-backend-send etaf-telega--backend text
-                                            (plist-get compose :target)))
-          ('edit (etaf-telega-backend-edit etaf-telega--backend
-                                           (plist-get compose :target) text))
-          (_ (etaf-telega-backend-send etaf-telega--backend text)))))
-    (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
-      (etaf-telega--paint))))
+      (pcase (plist-get compose :kind)
+        ('reply (etaf-telega-backend-send etaf-telega--backend text
+                                          (plist-get compose :target)))
+        ('edit (etaf-telega-backend-edit etaf-telega--backend
+                                         (plist-get compose :target) text))
+        (_ (etaf-telega-backend-send etaf-telega--backend text))))))
 
-(defun etaf-telega-keep-draft (text)
-  "Handle leaving the composer with TEXT.
-An edit restores the draft captured before editing; any other text stays
-available as the next draft."
+(defun etaf-telega--keep-draft (text)
+  "Keep TEXT as the draft after leaving the composer.
+Leaving an edit restores the draft captured before editing."
   (when etaf-telega--model
     (let ((compose (etaf-telega-model-compose etaf-telega--model)))
-      (if (eq (plist-get compose :kind) 'edit)
-          (etaf-telega-model-set-draft etaf-telega--model
-                                       (or (plist-get compose :draft) ""))
-        (etaf-telega-model-set-draft etaf-telega--model text))
-      (when compose
-        (etaf-telega-model-set-compose etaf-telega--model nil))))
-  (when (or etaf-telega--paint-pending etaf-telega--remount-pending)
-    (etaf-telega--paint)))
+      (etaf-batch
+        (etaf-telega-model-set-draft
+         etaf-telega--model
+         (if (eq (plist-get compose :kind) 'edit)
+             (or (plist-get compose :draft) "")
+           text))
+        (etaf-telega-model-set-compose etaf-telega--model nil)))))
 
-(defun etaf-telega-select-filter (key)
-  "Show the conversations of filter KEY and return to the list."
+(defun etaf-telega-reload-chat ()
+  "Reload the open chat's newest history page."
   (interactive)
-  (let ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端"))))
-    (etaf-telega-model-set-filter model key)
-    (etaf-telega-model-set-screen model 'root)
-    (etaf-telega-model-set-chat-scroll model 0)
-    (etaf-telega--paint)))
+  (let ((chat (etaf-telega-model-chat (etaf-telega--model))))
+    (unless chat (user-error "先选择一个对话"))
+    (setq etaf-telega--history-end nil
+          etaf-telega--older-pending nil
+          etaf-telega--history-retries 0)
+    (etaf-telega-backend-select etaf-telega--backend (plist-get chat :id))))
 
 (defun etaf-telega-back ()
-  "Leave the current screen: profiles and menus return to the conversation."
+  "Leave the chat for the conversation list, keeping its conversation at point."
   (interactive)
-  (when etaf-telega--model
-    (etaf-telega-model-set-screen
-     etaf-telega--model
-     (if (memq (etaf-telega-model-screen etaf-telega--model)
-               '(describe actions))
-         'chat
-       'root))
-    (etaf-telega--paint)))
+  (let ((model (etaf-telega--model)))
+    (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+      (etaf-text-input-end t))
+    (etaf-telega--show-screen 'root)
+    (or (and (etaf-telega-model-cursor model)
+             (etaf-telega--goto-ref etaf-telega--buffer
+                                    (etaf-telega--ref 'chat
+                                                      (etaf-telega-model-cursor model))))
+        (with-current-buffer etaf-telega--buffer (goto-char (point-min))))))
 
-(defun etaf-telega-describe ()
-  "Show the selected conversation's profile."
-  (interactive)
-  (let* ((model (or etaf-telega--model (user-error "当前不是 Telegram 客户端")))
-         (chat (or (etaf-telega-model-chat model)
-                   (etaf-telega-model-chat-by-id model
-                                                 (etaf-telega-model-cursor model)))))
-    (unless chat (user-error "先选择一个对话"))
-    (etaf-telega-model-set-screen model 'describe)
-    (etaf-telega--paint)
-    (etaf-telega-backend-describe etaf-telega--backend (plist-get chat :id))))
+;;;; Information, theme and lifecycle
 
-(defun etaf-telega-actions ()
-  "Show the selected message's action menu."
-  (interactive)
-  (etaf-telega-selected-message)
-  (etaf-telega-model-set-screen etaf-telega--model 'actions)
-  (etaf-telega--paint))
-
-(defun etaf-telega--chat-action (action)
-  "Apply ACTION to the open conversation and refresh its profile."
-  (let ((chat (etaf-telega-model-chat etaf-telega--model)))
-    (when chat
-      (etaf-telega-backend-chat-action etaf-telega--backend
-                                       (plist-get chat :id) action)
-      (when (eq (etaf-telega-model-screen etaf-telega--model) 'describe)
-        (etaf-telega-backend-describe etaf-telega--backend (plist-get chat :id))))))
-
-(defun etaf-telega-toggle-pin ()
-  "Toggle the open conversation's pinned state."
-  (interactive)
-  (etaf-telega--chat-action 'pin))
-
-(defun etaf-telega-toggle-mute ()
-  "Toggle the open conversation's muted state."
-  (interactive)
-  (etaf-telega--chat-action 'mute))
-
-(defun etaf-telega--run-action (action)
-  "Run ACTION from the message menu or the conversation profile."
-  (pcase action
-    ((or 'reply 'edit 'delete 'copy)
-     (etaf-telega-model-set-screen etaf-telega--model 'chat)
-     (pcase action
-       ('reply (etaf-telega-reply))
-       ('edit (etaf-telega-edit))
-       ('delete (etaf-telega-delete))
-       ('copy (etaf-telega-copy))))
-    ((or 'pin 'mute 'read) (etaf-telega--chat-action action))))
+(defun etaf-telega-info ()
+  "Return visible client facts without network I/O."
+  (let* ((model etaf-telega--model)
+         (chat (and model (etaf-telega-model-chat model))))
+    (list :buffer (and (buffer-live-p etaf-telega--buffer) etaf-telega--buffer)
+          :screen (and model (etaf-telega-model-screen model))
+          :status (and model (etaf-telega-model-status model))
+          :chats (length (and model (etaf-telega-model-chats model)))
+          :filter (and model (etaf-telega-model-filter model))
+          :cursor (and model (etaf-telega-model-cursor model))
+          :chat (plist-get chat :id)
+          :messages (length (and model (etaf-telega-model-messages model)))
+          :selected (and model (etaf-telega-model-selected-id model))
+          :compose (plist-get (and model (etaf-telega-model-compose model)) :kind)
+          :draft (and model (etaf-telega-model-draft model))
+          :history-end etaf-telega--history-end
+          :viewer (plist-get (and model (etaf-telega-model-viewer model)) :id)
+          :search (and model (etaf-telega-model-searching model)
+                       (etaf-telega-model-search model))
+          :chat-search (and model (etaf-telega-model-chat-search model))
+          :details (and model (etaf-telega-model-details model))
+          :editing (and (etaf-text-input-active-p
+                         (etaf-telega--runtime etaf-telega--buffer))
+                        t))))
 
 (defun etaf-telega-toggle-theme ()
-  "Switch the client between the dark and light palettes."
+  "Cycle the client through the dark, light and native palettes."
   (interactive)
-  (setq etaf-telega-theme
-        (if (eq (etaf-telega--theme-name) 'dark) 'light 'dark))
-  (when etaf-telega--model
-    (etaf-telega--remount))
-  (message "etaf-telega 主题：%s" (if (eq (etaf-telega--theme-name) 'dark)
-                                      "dark" "light")))
-
-(defun etaf-telega-quit ()
-  "Leave the current screen, or close the client from the chat list."
-  (interactive)
-  (if (eq (etaf-telega-model-screen etaf-telega--model) 'root)
-      (etaf-telega-close)
-    (etaf-telega-back)))
-
-(defvar etaf-telega-mode-map
-  (let ((map (make-sparse-keymap)))
-    (dolist (pair '(("j" . etaf-telega-next-chat) ("k" . etaf-telega-previous-chat)
-                    ("C-n" . etaf-telega-next-chat) ("C-p" . etaf-telega-previous-chat)
-                    ("M-<" . etaf-telega-first-chat) ("M->" . etaf-telega-last-chat)
-                    ("<wheel-up>" . etaf-telega-wheel-up)
-                    ("<wheel-down>" . etaf-telega-wheel-down)
-                    ("n" . etaf-telega-next-message) ("p" . etaf-telega-previous-message)
-                    ("SPC" . etaf-telega-page-down) ("S-SPC" . etaf-telega-page-up)
-                    ("C-v" . etaf-telega-page-down) ("M-v" . etaf-telega-page-up)
-                    ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
-                    ("o" . etaf-telega-actions) ("t" . etaf-telega-describe)
-                    ("d" . etaf-telega-delete) ("c" . etaf-telega-copy)
-                    ("i" . etaf-telega-compose)
-                    ("RET" . etaf-telega-return)
-                    ("g" . etaf-telega-reload-chat)
-                    ("T" . etaf-telega-toggle-theme)
-                    ("q" . etaf-telega-quit)))
-      (define-key map (kbd (car pair)) (cdr pair)))
-    (define-key map [wheel-up] #'etaf-telega-wheel-up)
-    (define-key map [wheel-down] #'etaf-telega-wheel-down)
-    map)
-  "Keys the client owns outside the composer.")
-
-(defvar etaf-telega--command-maps (list (cons 'etaf-telega--model etaf-telega-mode-map)))
+  (setq etaf-telega-theme (pcase (etaf-telega--theme-name)
+                            ('dark 'light)
+                            ('light 'native)
+                            (_ 'dark)))
+  (when-let* ((model etaf-telega--model)
+              (runtime (etaf-telega--runtime etaf-telega--buffer)))
+    (with-current-buffer etaf-telega--buffer
+      (let ((point (point)))
+        (etaf-unmount runtime)
+        (etaf-mount etaf-telega--buffer (etaf-view (etaf-telega-app :model model)))
+        (goto-char (min point (point-max))))))
+  (message "etaf-telega 主题：%s" (etaf-telega--theme-name)))
 
 ;;;###autoload
 (defun etaf-telega-open ()
-  "Mount the application in its own buffer and return that buffer."
+  "Show the client, starting it when needed, and return its buffer."
   (interactive)
-  (let ((buffer (get-buffer-create etaf-telega-buffer-name)))
-    (with-current-buffer buffer
-      (setq-local etaf-telega--model (etaf-telega-model)
-                  etaf-telega--backend (funcall etaf-telega-backend-create-function)
-                  etaf-telega--paint-pending nil
-                  etaf-telega--remount-pending nil
-                  etaf-telega--surface-rebuild nil)
-      (use-local-map etaf-telega-mode-map)
-      (setq-local emulation-mode-map-alists
-                  (cons 'etaf-telega--command-maps emulation-mode-map-alists)))
-    ;; The client owns the current window; never let display-buffer split it.
-    (pop-to-buffer buffer '((display-buffer-same-window)))
-    (with-current-buffer buffer
-      (etaf-mount buffer (lambda () (etaf-telega--view)))
-      (setq-local cursor-type nil)
-      (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t)
-      (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks buffer))
-      (etaf-runtime-flush (etaf-runtime-for-buffer buffer)))
-    buffer))
+  (unless (and etaf-telega--model (buffer-live-p etaf-telega--buffer))
+    (etaf-telega-close)
+    (let ((buffer (get-buffer-create etaf-telega-buffer-name))
+          (model (etaf-telega-model)))
+      (setq etaf-telega--model model
+            etaf-telega--backend (funcall etaf-telega-backend-create-function)
+            etaf-telega--buffer buffer)
+      ;; The shell is one window tall, so mount where the window is known.
+      (pop-to-buffer-same-window buffer)
+      (etaf-mount buffer (etaf-view (etaf-telega-app :model model)))
+      (with-current-buffer buffer
+        (setq-local cursor-type nil)
+        (etaf-telega--install-keys)
+        (add-hook 'post-command-hook #'etaf-telega--track-point nil t)
+        (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t))
+      (etaf-telega--show-screen 'root)
+      (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks model))))
+  (pop-to-buffer-same-window etaf-telega--buffer)
+  etaf-telega--buffer)
 
 (defun etaf-telega--dispose ()
-  "Release the backend and runtime owned by this buffer."
-  (when etaf-telega--backend
-    (etaf-telega-backend-stop etaf-telega--backend)
-    (setq etaf-telega--backend nil))
-  (when-let* ((runtime (etaf-runtime-for-buffer (current-buffer))))
-    (etaf-unmount runtime)))
+  "Stop the backend and release the mounted buffer."
+  (let ((backend etaf-telega--backend)
+        (buffer etaf-telega--buffer))
+    (setq etaf-telega--model nil
+          etaf-telega--backend nil
+          etaf-telega--buffer nil)
+    (when backend (etaf-telega-backend-stop backend))
+    (when-let* ((runtime (etaf-telega--runtime buffer)))
+      (with-current-buffer buffer
+        (when (etaf-text-input-active-p runtime)
+          (etaf-text-input-end t)))
+      (etaf-unmount runtime))))
 
 ;;;###autoload
 (defun etaf-telega-close ()
-  "Unmount the application buffer and kill it.
+  "Close the client buffer.
 The backend stops observing without closing Telega's server or account."
   (interactive)
-  (let ((buffer (get-buffer etaf-telega-buffer-name)))
-    (when (and buffer (buffer-live-p buffer))
-      (with-current-buffer buffer (etaf-telega--dispose))
-      (kill-buffer buffer))))
-
-(defvar-local etaf-telega--resize-timer nil
-  "Pending debounced repaint after a window resize.")
-
-(defun etaf-telega--resize-repaint (buffer)
-  "Repaint BUFFER's client after its window size settled.
-The projection bakes cell counts into the View, so a resize has to reproject
-instead of only refitting the tree."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (setq etaf-telega--resize-timer nil)
-      (when (and etaf-telega--model (etaf-telega--window))
-        (etaf-telega--remount)))))
-
-(defun etaf-telega--schedule-resize-repaint ()
-  "Repaint this client shortly after its window size settles."
-  (when (timerp etaf-telega--resize-timer)
-    (cancel-timer etaf-telega--resize-timer))
-  (setq etaf-telega--resize-timer
-        (run-at-time 0.15 nil #'etaf-telega--resize-repaint (current-buffer))))
-
-(defun etaf-telega--window-size-changed (frame)
-  "Repaint every mounted client displayed in FRAME after it settles."
-  (dolist (window (window-list frame 'no-minibuf))
-    (with-current-buffer (window-buffer window)
-      (when (and (bound-and-true-p etaf-telega--model) etaf-telega--model)
-        (etaf-telega--schedule-resize-repaint)))))
-
-(add-hook 'window-size-change-functions #'etaf-telega--window-size-changed)
+  (let ((buffer etaf-telega--buffer))
+    (etaf-telega--dispose)
+    (when (buffer-live-p buffer) (kill-buffer buffer))))
 
 (provide 'etaf-telega-app)
 ;;; etaf-telega-app.el ends here

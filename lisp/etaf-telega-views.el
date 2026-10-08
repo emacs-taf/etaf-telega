@@ -4,13 +4,20 @@
 
 ;;; Commentary:
 ;;
-;; Views are pure projections: they read refs and return structure.  The shell
-;; provides the application palette to the catalog, so the composer field and
-;; every later etaf-ui component render in the application colors.
+;; Views are pure projections of the model into one window-tall shell: a
+;; fixed app bar above one of two screens that follow Telega's own buffers,
+;; and the media viewer over both.  The list screen pins its filter tabs above
+;; a scrolling column of two-line conversation rows; the chat screen scrolls
+;; its history, anchored at the newest message, above a fixed composer.
+;; Messages share one left-aligned style, the account's own included: an
+;; avatar and sender line open each sender group and reactions sit under the
+;; text.  Only the scrolling bodies move, so headers, tabs and the composer
+;; never shift.
 ;;
-;; The message view keeps one row per message so selection, reply quotes and
-;; future per-message affordances have a home; day separators group the rows
-;; exactly like Telega's own chat buffer.
+;; Every chat and message row carries an explicit Host ref, so the
+;; application maps point to the row under it and moves point between rows.
+;; Selection highlighting reads a keyed selector: moving the selection
+;; re-renders the previous and the new row only.
 
 ;;; Code:
 
@@ -19,23 +26,47 @@
 (require 'etaf-ui)
 (require 'etaf-telega-theme)
 
-(declare-function etaf-telega-model-selected-message "etaf-telega-model" (model))
-
 (declare-function etaf-telega-send "etaf-telega-app" (text))
-(declare-function etaf-telega-keep-draft "etaf-telega-app" (text))
-(declare-function etaf-telega-open-chat "etaf-telega-app" (chat))
+(declare-function etaf-telega--keep-draft "etaf-telega-app" (text))
+(declare-function etaf-telega-open-chat "etaf-telega-app" (id))
+(declare-function etaf-telega-select-filter "etaf-telega-app" (key))
+(declare-function etaf-telega-back "etaf-telega-app" ())
+(declare-function etaf-telega-react "etaf-telega-app" (id key))
+(declare-function etaf-telega-close-media "etaf-telega-app" ())
+(declare-function etaf-telega-swipe "etaf-telega-app" (direction))
+(declare-function etaf-telega--history-scrolled "etaf-telega-app" (offset))
+(declare-function etaf-telega--viewer-step "etaf-telega-app" (delta))
+(declare-function etaf-telega-jump-newest "etaf-telega-app" ())
+(declare-function etaf-telega-open-media "etaf-telega-app" (id))
+(declare-function etaf-telega-show-message "etaf-telega-app" (id))
+(declare-function etaf-telega-search-exit "etaf-telega-app" ())
+(declare-function etaf-telega-search-clear-recent "etaf-telega-app" ())
+(declare-function etaf-telega--search-focused "etaf-telega-app" ())
+(declare-function etaf-telega--search-submit "etaf-telega-app" (query))
+(declare-function etaf-telega--search-cancelled "etaf-telega-app" (query))
+(declare-function etaf-telega--search-kind-select "etaf-telega-app" (kind))
+(declare-function etaf-telega-chat-search "etaf-telega-app" ())
+(declare-function etaf-telega-chat-search-exit "etaf-telega-app" ())
+(declare-function etaf-telega--chat-search-cancelled "etaf-telega-app" (query))
+(declare-function etaf-telega-toggle-details "etaf-telega-app" ())
+(declare-function etaf-telega--list-menu-select "etaf-telega-app" (key))
+(declare-function etaf-telega--chat-menu-select "etaf-telega-app" (key))
 
-(defun etaf-telega--wrap (text width)
-  "Wrap TEXT at WIDTH display cells, preserving empty lines."
-  (let (lines)
-    (dolist (line (split-string (replace-regexp-in-string "\t" "    " text t t) "\n" nil))
-      (while (> (string-width line) width)
-        (let* ((piece (truncate-string-to-width line width))
-               (count (max 1 (length piece))))
-          (push (substring line 0 count) lines)
-          (setq line (substring line count))))
-      (push line lines))
-    (nreverse lines)))
+(defvar etaf-telega--refs (obarray-make)
+  "Private obarray holding the Host ref symbols of chat and message rows.")
+
+(defun etaf-telega--ref (kind id)
+  "Return the Host ref symbol of the KIND row (`chat' or `message') with ID."
+  (let ((symbol (intern (format "%s:%s" kind id) etaf-telega--refs)))
+    (unless (get symbol 'etaf-telega-kind)
+      (put symbol 'etaf-telega-kind kind)
+      (put symbol 'etaf-telega-id id))
+    symbol))
+
+(defun etaf-telega--ref-id (kind ref)
+  "Return the row id carried by REF when it is a KIND row ref, else nil."
+  (and (symbolp ref) (eq (get ref 'etaf-telega-kind) kind)
+       (get ref 'etaf-telega-id)))
 
 (defconst etaf-telega--pictograph-regexp
   "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE0F\u200D]"
@@ -44,9 +75,12 @@ Rows and pane headers keep a fixed row budget, so their text drops these
 characters instead of letting a colour emoji font stretch the line.")
 
 (defun etaf-telega--plain-text (text)
-  "Return TEXT without pictographs, keeping one canvas line height."
+  "Return TEXT without pictographs or Telega's faces.
+Pictographs would grow the canvas line height, and faces Telega attaches
+to titles and entities would override the application's palette."
   (if (stringp text)
-      (replace-regexp-in-string etaf-telega--pictograph-regexp "" text)
+      (replace-regexp-in-string etaf-telega--pictograph-regexp ""
+                                (substring-no-properties text))
     text))
 
 (defun etaf-telega--one-line (text &optional limit)
@@ -73,28 +107,15 @@ Pictographs are removed so the row keeps the canvas line height."
         (t (number-to-string count))))
 
 (defun etaf-telega--message-body-text (message)
-  "Return MESSAGE's body text, including its edited mark."
-  (concat (or (plist-get message :text) "")
-          (if (plist-get message :edited) "（已编辑）" "")))
-
-(defun etaf-telega--message-stamp (message)
-  "Return MESSAGE's Telega-style stamp: the time today, its date otherwise."
-  (let ((date (plist-get message :date))
-        (time (or (plist-get message :time) "")))
-    (cond ((null date) time)
-          ((equal date (format-time-string "%Y-%m-%d")) time)
-          (t (let ((parts (split-string date "-")))
-               (if (= 3 (length parts))
-                   (format "%s.%s.%s" (nth 2 parts) (nth 1 parts)
-                           (substring (nth 0 parts) 2))
-                 date))))))
+  "Return MESSAGE's body text."
+  (or (plist-get message :text) ""))
 
 (defun etaf-telega--media-label (kind)
   "Return KIND's short placeholder label."
   (pcase kind
     ('photo "[图片]")
-    ('video "[视频]")
-    ('animation "[动图]")
+    ('video "▶ 视频")
+    ('animation "▶ 动图")
     ('voice "[语音]")
     ('audio "[音频]")
     ('sticker "[贴纸]")
@@ -108,14 +129,15 @@ Pictographs are removed so the row keeps the canvas line height."
         ((< size (* 1024 1024)) (format "%.0fK" (/ size 1024.0)))
         (t (format "%.1fM" (/ size (* 1024.0 1024.0))))))
 
-(defun etaf-telega--message-extras (message width)
-  "Return MESSAGE's extra display lines (media, file, link) wrapped at WIDTH."
+(defun etaf-telega--message-extras (message)
+  "Return MESSAGE's extra display lines (media, file, link)."
   (let ((kind (plist-get message :kind))
         (file (plist-get message :file))
         (link (plist-get message :link))
-        (width (max 8 width))
         lines)
-    (when (and kind (not (eq kind 'text)))
+    (when (and kind (not (eq kind 'text))
+               (not (and (plist-get message :media)
+                         (memq kind '(photo sticker video animation)))))
       (push (if (and (eq kind 'file) file)
                 (format "%s %s %s"
                         (etaf-telega--media-label kind)
@@ -128,518 +150,1151 @@ Pictographs are removed so the row keeps the canvas line height."
                     (or (plist-get link :site) "")
                     (or (plist-get link :title) ""))
             lines))
-    (cl-mapcan (lambda (line) (etaf-telega--wrap line width))
-               (nreverse lines))))
+    (mapcar #'etaf-telega--plain-text (nreverse lines))))
 
-(defvar etaf-telega--message-metrics nil
-  "Cache of message display metrics per (message id . width).
-Entries carry the content signature, the wrapped line counts and the
-wrapped body/extras text, so a paint reuses the text of every unchanged
-row instead of wrapping the whole history again.")
-
-(defun etaf-telega--message-metrics (message width)
-  "Return MESSAGE's cached display metrics at WIDTH.
-The plist holds `:signature' (content), `:lines' and `:extras' (row counts)
-and the wrapped `:body' and `:extra-lines' text."
-  (let* ((key (cons (plist-get message :id) width))
-         (signature (sxhash-equal
-                     (list (etaf-telega--message-body-text message)
-                           (plist-get message :kind)
-                           (plist-get message :file)
-                           (plist-get message :link)
-                           (plist-get message :reply))))
-         (cache (or etaf-telega--message-metrics
-                    (setq etaf-telega--message-metrics
-                          (make-hash-table :test #'equal))))
-         (entry (gethash key cache)))
-    (if (and entry (eql signature (plist-get entry :signature)))
-        entry
-      (when (> (hash-table-count cache) 4096) (clrhash cache))
-      (let* ((text-width (max 8 (- width 6)))
-             (body-lines (etaf-telega--wrap
-                          (etaf-telega--message-body-text message)
-                          text-width))
-             (extra-lines (etaf-telega--message-extras message text-width)))
-        (setq entry (list :signature signature
-                          :lines (length body-lines)
-                          :extras (length extra-lines)
-                          :body (mapconcat #'identity body-lines "\n")
-                          :extra-lines extra-lines))
-        (puthash key entry cache)
-        entry))))
-
-(defun etaf-telega--message-body-text-cached (message width)
-  "Return MESSAGE's wrapped body text at WIDTH, cached by content."
-  (plist-get (etaf-telega--message-metrics message width) :body))
-
-(defun etaf-telega--message-extras-cached (message width)
-  "Return MESSAGE's wrapped extra lines at WIDTH, cached by content."
-  (plist-get (etaf-telega--message-metrics message width) :extra-lines))
-
-(defun etaf-telega-message-blocks (messages selected width)
-  "Return display blocks for MESSAGES at WIDTH.
-Each block is a plist with `:message', its display `:height' in rows (at
-least the avatar column), `:selected' and the day `:separator' that opens
-it.  The viewport slices blocks; row metrics are cached by content so
-wrapping happens once per changed row, not once per paint."
-  (let (blocks last-date)
-    (dolist (message messages)
-      (let (separator)
-        (when-let* ((date (plist-get message :date)))
-          (unless (equal date last-date)
-            (setq separator date
-                  last-date date)))
-        (let* ((metrics (etaf-telega--message-metrics message width))
-               (lines (plist-get metrics :lines))
-               (extras (plist-get metrics :extras))
-               (content (+ 1 (if (plist-get message :reply) 1 0)
-                           extras (max 1 lines))))
-          (push (list :message message :separator separator
-                      :selected (equal (plist-get message :id) selected)
-                      :height (+ (if separator 1 0) (max 2 content)))
-                blocks))))
-    (nreverse blocks)))
+(defun etaf-telega--reply-text (reply)
+  "Return REPLY's one-line quote text, naming its media when it has no text."
+  (let ((text (etaf-telega--one-line (plist-get reply :text) 60)))
+    (if (string-empty-p (string-trim text))
+        (let ((label (etaf-telega--media-label (plist-get reply :kind))))
+          (if (string-empty-p label) "消息" label))
+      text)))
 
 (defun etaf-telega--compose-label (compose)
   "Return COMPOSE's prompt line, or nil while plainly composing."
   (let ((target (plist-get compose :target)))
     (pcase (plist-get compose :kind)
-      ('reply (format "» 回复 %s：%s　C-c C-k 取消"
-                      (or (plist-get target :sender) "?")
+      ('reply (format "回复 %s：%s"
+                      (etaf-telega--plain-text (or (plist-get target :sender) "?"))
                       (etaf-telega--one-line (plist-get target :text) 40)))
-      ('edit (format "» 编辑消息：%s　C-c C-k 取消"
+      ('edit (format "编辑：%s"
                      (etaf-telega--one-line (plist-get target :text) 40)))
       (_ nil))))
 
-(etaf-define-component etaf-telega-chat-row (&key chat selected width)
-  "Render one CHAT row; pressing it opens the conversation.
-The row is exactly two lines: title over preview, with a coloured initial
-chip, the timestamp and the unread badge in fixed right-aligned columns."
-  :render
-  (let* ((title (or (plist-get chat :title) "?"))
-         (unread (or (plist-get chat :unread) 0))
-         (muted (plist-get chat :muted))
-         (limit (max 8 (- width 16))))
-    (etaf-view
-     (flex :flex-direction 'row :align-items 'center :width 'stretch
-           :height '(lh 2) :padding '((lh 0) (ch 2)) :column-gap '(ch 1)
-           :background-color (if selected (etaf-telega-color :accent-soft)
-                               (etaf-telega-color :surface))
-           :border-bottom (list '(px 1) 'solid (etaf-telega-color :hairline))
-           :role 'button :tab-index 0
-           :on-press (lambda () (etaf-telega-open-chat chat))
-       (box :class "etaf-avatar" :role 'img :width '(ch 2) :height '(lh 1)
-            :text-align 'center :font-weight 'bold
-            :color (etaf-telega-color :bg)
-            :background-color (etaf-telega-sender-color title)
-         (text (expr (etaf-telega--initial title))))
-       (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
-         (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-           (text :color (etaf-telega-color :ink)
-                 :font-weight (if (and (> unread 0) (not muted)) 'bold 'normal)
-                 (expr (etaf-telega--plain-text title))))
-         (box :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-           (text :color (etaf-telega-color :muted)
-                 (expr (etaf-telega--one-line (plist-get chat :preview) limit)))))
-       (flex :flex-direction 'column :width '(ch 6) :row-gap '(lh 0)
-         (box :height '(lh 1) :width 'stretch :text-align 'right
-              :overflow 'hidden :wrap-mode 'none
-           (text :color (etaf-telega-color :muted)
-                 (expr (or (plist-get chat :time) ""))))
-         (flex :flex-direction 'row :width 'stretch :justify-content 'flex-end
-           (expr (when (> unread 0)
-                   (if muted
-                       (etaf-node 'text (list :color (etaf-telega-color :muted)
-                                               :font-weight 'bold)
-                                  (list (etaf-telega--count-label unread)))
-                     (etaf-node 'etaf-badge
-                                (list :text (etaf-telega--count-label unread)
-                                      :variant 'info)
-                                nil))))))))))
-
-(etaf-define-component etaf-telega-day-separator (&key label)
-  "Render the day LABEL as a centred chip between message groups."
-  :view
-  (flex :flex-direction 'row :justify-content 'center :width 'stretch
-        :height '(lh 1)
-    (box :padding-inline '(ch 1)
-         :background-color (etaf-telega-color :surface-2)
-         :color (etaf-telega-color :muted) :font-weight 'bold
-      (text (expr label)))))
-
-(etaf-define-component etaf-telega-message-block (&key block width)
-  "Render one message BLOCK with its day separator and avatar."
-  :view
-  (flex :flex-direction 'column :width 'stretch
-    (flex :if (plist-get block :separator)
-      (etaf-telega-day-separator :label (plist-get block :separator)))
-    (flex :flex-direction 'row :align-items 'flex-start :width 'stretch
-          :padding '((lh 0) (ch 1)) :column-gap '(ch 1)
-          :border-bottom (list '(px 1) 'solid (etaf-telega-color :hairline))
-          :background-color (when (plist-get block :selected)
-                              (etaf-telega-color :accent-soft))
-      (box :class "etaf-avatar" :role 'img :width '(ch 2) :height '(lh 1)
-           :text-align 'center :font-weight 'bold
-           :color (etaf-telega-color :bg)
-           :background-color (etaf-telega-sender-color
-                              (plist-get (plist-get block :message) :sender))
-        (text (expr (etaf-telega--initial
-                     (plist-get (plist-get block :message) :sender)))))
-      (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
-        (flex :flex-direction 'row :align-items 'center :width 'stretch
-              :height '(lh 1) :column-gap '(ch 1)
-          (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
-               :height '(lh 1) :overflow 'hidden :wrap-mode 'none
-            (text :color (if (plist-get (plist-get block :message) :outgoing)
-                             (etaf-telega-color :accent)
-                           (etaf-telega-sender-color
-                            (plist-get (plist-get block :message) :sender)))
-                  :font-weight 'bold
-                  (expr (or (plist-get (plist-get block :message) :sender) "?"))))
-          (text :color (etaf-telega-color :muted)
-                (expr (etaf-telega--message-stamp (plist-get block :message)))))
-        (expr (when-let* ((reply (plist-get (plist-get block :message) :reply)))
-                (list (etaf-node
-                       'text (list :color (etaf-telega-color :muted))
-                       (list (format "↩ %s：%s"
-                                     (or (plist-get reply :sender) "?")
-                                     (etaf-telega--one-line (plist-get reply :text) 36)))))))
-        (expr (mapcar (lambda (line)
-                        (etaf-node 'text (list :color (etaf-telega-color :muted))
-                                   (list line)))
-                      (etaf-telega--message-extras-cached (plist-get block :message)
-                                                          (max 8 (- width 6)))))
-        (text :color (etaf-telega-color :ink)
-              (expr (etaf-telega--message-body-text-cached
-                     (plist-get block :message) (max 8 (- width 6)))))))))
-
-(etaf-define-component etaf-telega-describe-screen (&key describe on-action on-back)
-  "Render DESCRIBE's chat profile with its facts and profile actions."
-  :render
-  (let* ((title (or (plist-get describe :title) "?"))
-         (kind (pcase (plist-get describe :kind)
-                 ('group "群组") ('channel "频道") (_ "私聊")))
-         (username (or (plist-get describe :username) ""))
-         (members (or (plist-get describe :members) 0))
-         (description (or (plist-get describe :description) ""))
-         (pinned (plist-get describe :pinned))
-         (muted (plist-get describe :muted))
-         (unread (or (plist-get describe :unread) 0)))
-    (etaf-view
-     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-           :min-height '(lh 1) :width 'stretch :overflow 'hidden
-           :padding '((lh 1) (ch 3)) :row-gap '(lh 1)
-       (flex :flex-direction 'row :align-items 'center :column-gap '(ch 2)
-         (box :class "etaf-avatar" :role 'img :width '(ch 5) :height '(lh 3)
-              :text-align 'center :font-weight 'bold
-              :color (etaf-telega-color :bg)
-              :background-color (etaf-telega-sender-color title)
-           (text (expr (format "\n%s" (etaf-telega--initial title)))))
-         (flex :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0)
-               :min-width '(ch 0) :row-gap '(lh 0)
-           (text :color (etaf-telega-color :ink) :font-weight 'bold
-                 (expr (etaf-telega--plain-text title)))
-           (text :color (etaf-telega-color :muted)
-                 (expr (etaf-telega--plain-text
-                        (if (string-empty-p username)
-                            kind
-                          (format "@%s" username)))))))
-       (etaf-divider)
-       (flex :flex-direction 'column :row-gap '(lh 1)
-         (flex :flex-direction 'row :column-gap '(ch 2)
-           (box :width '(ch 6)
-             (text :color (etaf-telega-color :muted) "类型"))
-           (text :color (etaf-telega-color :ink) (expr kind)))
-         (flex :flex-direction 'row :column-gap '(ch 2)
-           (box :width '(ch 6)
-             (text :color (etaf-telega-color :muted) "成员"))
-           (text :color (etaf-telega-color :ink)
-                 (expr (if (> members 0) (number-to-string members) "—")))))
-       (flex :flex-direction 'column :row-gap '(lh 1)
-         (text :color (etaf-telega-color :muted) "简介")
-         (text :color (etaf-telega-color :ink)
-               (expr (etaf-telega--plain-text
-                      (if (string-empty-p description) "暂无简介" description)))))
-       (flex :flex-direction 'row :column-gap '(ch 1)
-         (etaf-button :label (if pinned "取消置顶" "置顶")
-                      :variant 'secondary
-                      :on-press (lambda () (funcall on-action 'pin)))
-         (etaf-button :label (if muted "取消静音" "静音")
-                      :variant 'secondary
-                      :on-press (lambda () (funcall on-action 'mute)))
-         (etaf-button :label (if (> unread 0) "标为已读" "标为未读")
-                      :variant 'ghost
-                      :on-press (lambda () (funcall on-action 'read))))
-       (text :color (etaf-telega-color :muted) "q 返回")))))
-
-(etaf-define-component etaf-telega-actions-screen (&key message-slice on-action on-back)
-  "Render the selected message's action menu."
-  :render
-  (let* ((message (funcall message-slice))
-         (preview (etaf-telega--one-line (plist-get message :text) 60)))
-    (etaf-view
-     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-           :min-height '(lh 1) :width 'stretch :overflow 'hidden
-           :padding '((lh 2) (ch 3)) :row-gap '(lh 1)
-       (text :color (etaf-telega-color :ink) :font-weight 'bold "消息操作")
-       (box :background-color (etaf-telega-color :surface-2)
-            :padding '((lh 0) (ch 1))
-         (text :color (etaf-telega-color :muted) (expr preview)))
-       (etaf-divider)
-       (flex :flex-direction 'column :row-gap '(lh 1)
-         (etaf-button :label "回复" :variant 'ghost
-                      :on-press (lambda () (funcall on-action 'reply)))
-         (etaf-button :label "编辑" :variant 'ghost
-                      :on-press (lambda () (funcall on-action 'edit)))
-         (etaf-button :label "复制" :variant 'ghost
-                      :on-press (lambda () (funcall on-action 'copy)))
-         (etaf-button :label "删除" :variant 'ghost
-                      :color (etaf-telega-color :danger)
-                      :on-press (lambda () (funcall on-action 'delete))))
-       (text :color (etaf-telega-color :muted) "q 返回")))))
+(defun etaf-telega--group-digits (count)
+  "Return natural number COUNT with thousands separated by commas."
+  (let ((digits (number-to-string count)))
+    (while (string-match "\\([0-9]\\)\\([0-9]\\{3\\}\\)\\(?:,\\|$\\)" digits)
+      (setq digits (replace-match "\\1,\\2" t nil digits)))
+    digits))
 
 (defun etaf-telega--chat-meta (chat)
-  "Return CHAT's one-line meta text for the pane header."
-  (let* ((kind (pcase (plist-get chat :kind)
-                 ('group "群组") ('channel "频道") ('private "私聊") (_ nil)))
-         (username (or (plist-get chat :username) ""))
-         (parts (delq nil (list kind
-                                (unless (string-empty-p username)
-                                  (format "@%s" username))))))
-    (if parts (mapconcat #'identity parts " · ") "")))
+  "Return CHAT's one-line meta text: members, subscribers or presence."
+  (let ((members (plist-get chat :members))
+        (username (or (plist-get chat :username) "")))
+    (pcase (plist-get chat :kind)
+      ('channel (if members
+                    (format "%s 位订阅者" (etaf-telega--group-digits members))
+                  "频道"))
+      ('group (if members
+                  (format "%s 位成员" (etaf-telega--group-digits members))
+                "群组"))
+      ('private (cond ((plist-get chat :online) "在线")
+                      ((not (string-empty-p username)) (format "@%s" username))
+                      (t "私聊")))
+      (_ ""))))
 
-(etaf-define-component etaf-telega-filter-bar (&key model filter-items on-filter)
-  "Render the conversation filter tabs.
-FILTER-ITEMS is a thunk over the chats so the bar re-renders only when the
-counts or the active tab change."
-  :render
-  (let ((items (funcall filter-items)))
-    (etaf-view
-     (flex :flex-direction 'row :align-items 'center
-           :height '(lh 2) :padding '((lh 0) (ch 2))
-           :background-color (etaf-telega-color :surface)
-           :border-bottom (list '(px 1) 'solid (etaf-telega-color :hairline))
-       (etaf-tabs :items items :active (etaf-value (plist-get model :filter))
-                  :on-change on-filter)))))
+;;;; Root list
 
-(etaf-define-component etaf-telega-chat-list (&key model chat-slice rows-width)
-  "Render the conversation rows pane.
-CHAT-SLICE is a thunk returning the visible slice, so the list re-renders
-with the chats instead of with the whole application."
-  :render
-  (let ((chats (plist-get (funcall chat-slice) :chats)))
-    (etaf-view
-     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-           :min-height '(lh 1) :width 'stretch :overflow 'hidden
-       (expr (mapcar (lambda (chat)
-                       (etaf-view
-                        (etaf-telega-chat-row
-                         :key (plist-get chat :id) :chat chat :width rows-width
-                         :selected (equal (plist-get chat :id)
-                                          (etaf-value (plist-get model :cursor))))))
-                     chats))))))
+(defconst etaf-telega-filters
+  '((main . "全部") (important . "重要") (online . "在线")
+    (groups . "群组") (channels . "频道") (archived . "归档"))
+  "Chat filters shown in the root tab strip.")
 
-(etaf-define-component etaf-telega-message-viewport (&key model message-slice width)
-  "Render the visible message blocks above the composer.
-MESSAGE-SLICE is a thunk, so appending or scrolling a message re-renders
-only the viewport and leaves the title strip and composer alone."
-  :render
-  (let ((blocks (funcall message-slice)))
-    (etaf-view
-     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-           :min-height '(lh 1) :overflow 'hidden :wrap-mode 'none
-           :justify-content 'flex-end
-           :padding '((lh 0) (ch 2))
-       (expr (or (mapcar (lambda (block)
-                           (etaf-view (etaf-telega-message-block
-                                       :key (plist-get (plist-get block :message) :id)
-                                       :block block :width width)))
-                         blocks)
-                 (list (etaf-node
-                        'text (list :color (etaf-telega-color :muted))
-                        (list (if (etaf-value (plist-get model :chat))
-                                  ""
-                                "选择一个对话"))))))))))
+(defun etaf-telega--filter-chats (chats key)
+  "Return CHATS matching filter KEY."
+  (pcase key
+    ('main (cl-remove-if (lambda (chat) (plist-get chat :archived)) chats))
+    ('important (cl-remove-if-not (lambda (chat)
+                                    (> (or (plist-get chat :mention) 0) 0))
+                                  chats))
+    ('online (cl-remove-if-not (lambda (chat) (plist-get chat :online)) chats))
+    ('groups (cl-remove-if-not (lambda (chat)
+                                 (eq (plist-get chat :kind) 'group)) chats))
+    ('channels (cl-remove-if-not (lambda (chat)
+                                   (eq (plist-get chat :kind) 'channel)) chats))
+    ('archived (cl-remove-if-not (lambda (chat)
+                                   (plist-get chat :archived)) chats))
+    (_ chats)))
 
-(etaf-define-component etaf-telega-chat-pane (&key model message-slice width header)
-  "Render the conversation pane: an optional title strip, the message
-viewport and the composer.  In the wide layout HEADER names the open
-conversation; the narrow layout already owns the shell title bar."
-  :render
-  (etaf-view
-   (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-        :min-height '(lh 1) :width 'stretch :overflow 'hidden
-    (flex :if header :flex-direction 'column :justify-content 'center
-          :height '(lh 2) :padding '((lh 0) (ch 2))
-          :background-color (etaf-telega-color :surface-2)
-          :border-bottom (list '(px 1) 'solid (etaf-telega-color :hairline))
-      (text :color (etaf-telega-color :ink) :font-weight 'bold
-            (expr (etaf-telega--plain-text
-                   (or (plist-get (etaf-value (plist-get model :chat)) :title)
-                       "对话"))))
-      (text :color (etaf-telega-color :muted)
-            (expr (etaf-telega--plain-text
-                   (etaf-telega--chat-meta
-                    (etaf-value (plist-get model :chat)))))))
-    (etaf-telega-message-viewport :model model :message-slice message-slice
-                                  :width width)
-    (flex :flex-direction 'column :width 'stretch
-          :background-color (etaf-telega-color :surface)
-          :border-top (list '(px 1) 'solid (etaf-telega-color :hairline))
-          :padding '((lh 1) (ch 2)) :row-gap '(lh 1)
-      (expr (when-let* ((compose (etaf-value (plist-get model :compose)))
-                        (label (etaf-telega--compose-label compose)))
-              (etaf-node 'text (list :color (etaf-telega-color :accent))
-                         (list label))))
-      (etaf-text-input
-       :ref 'telega-composer :bind (plist-get model :draft)
-       :label "消息" :hide-label t :rows 1
-       :width (list 'ch (max 20 width))
-       :placeholder "发消息…" :submit-on-return t
-       :on-submit #'etaf-telega-send
-       :on-cancel #'etaf-telega-keep-draft)))))
+(defun etaf-telega--filter-items (chats)
+  "Return the filter tab items over CHATS, with unread chat counts."
+  (mapcar (lambda (entry)
+            (let* ((matching (etaf-telega--filter-chats chats (car entry)))
+                   (unread (cl-count-if (lambda (chat)
+                                          (> (or (plist-get chat :unread) 0) 0))
+                                        matching)))
+              (append (list :key (car entry) :label (cdr entry))
+                      (when (> unread 0) (list :count unread)))))
+          etaf-telega-filters))
 
-(etaf-define-component etaf-telega-welcome-pane (&key model)
-  "Render the wide layout's idle pane beside the conversation list."
-  :render
-  (let* ((all (etaf-value (plist-get model :chats)))
-         (total (length all))
-         (unread (length (cl-remove-if-not
-                          (lambda (chat) (> (or (plist-get chat :unread) 0) 0))
-                          all))))
-    (etaf-view
-     (flex :flex-direction 'column :flex-grow 1 :flex-basis '(lh 0)
-           :min-height '(lh 1) :width 'stretch :overflow 'hidden
-           :justify-content 'center :row-gap '(lh 1)
-       (box :width 'stretch :text-align 'center
-         (text :color (etaf-telega-color :ink) :font-weight 'bold "Telegram"))
-       (box :width 'stretch :text-align 'center
-         (text :color (etaf-telega-color :muted)
-               (expr (format "共 %d 个对话 · %d 个未读" total unread))))
-       (box :width 'stretch :text-align 'center
-         (text :color (etaf-telega-color :muted)
-               "j/k 选择会话，RET 打开"))))))
+;;;; Layout
 
-(etaf-define-component etaf-telega-shell
-    (&key model width list-width list-ratio split message-slice chat-slice
-          filter-items selected-slice on-filter on-back on-action on-resize-list)
-  "Render the client shell for MODEL.
-MESSAGE-SLICE, CHAT-SLICE, FILTER-ITEMS and SELECTED-SLICE are thunks the
-nested panes call inside their own render, so a message or chat change
-re-renders only that pane instead of the whole application.  SCREEN is the
-model's active screen, read here so opening a screen rebinds the layout."
-  :setup (etaf-theme-provide (etaf-telega-theme-defaults))
+(defcustom etaf-telega-split-columns 120
+  "Narrowest window, in columns, that shows the list beside the open chat.
+Narrower windows show one screen at a time in Telega's compact line style;
+wider ones use Telegram's two-pane layout with message bubbles."
+  :type 'natnum
+  :group 'etaf-telega)
+
+(defconst etaf-telega--list-pane-columns 52
+  "Default width, in columns, of the conversation list beside the chat.")
+
+(defconst etaf-telega--list-pane-min-columns 30
+  "Narrowest width, in columns, the list pane can be dragged to.")
+
+(defconst etaf-telega--chat-pane-min-columns 64
+  "Narrowest chat, in columns, kept beside the list and the details pane.
+When the details pane would squeeze the chat below it, the list hides.")
+
+(defconst etaf-telega--details-pane-columns 44
+  "Width, in columns, of the chat details pane.")
+
+(defun etaf-telega--columns ()
+  "Return the canvas width in columns; the read is reactive."
+  (/ (or (car (etaf-runtime-viewport)) 0) (max 1 (frame-char-width))))
+
+(defun etaf-telega--layout ()
+  "Return the layout the canvas width selects: `compact' or `split'.
+The read is reactive, so a resize across the threshold switches layouts."
+  (if (< (etaf-telega--columns) etaf-telega-split-columns) 'compact 'split))
+
+(defun etaf-telega--list-pixels (model)
+  "Return the list pane width in pixels: MODEL's dragged width or the default.
+The width stays between the minimum and half the canvas."
+  (let* ((cw (max 1 (frame-char-width)))
+         (canvas (or (car (etaf-runtime-viewport)) 0))
+         (width (or (etaf-value (plist-get model :list-width))
+                    (* etaf-telega--list-pane-columns cw))))
+    (round (max (* etaf-telega--list-pane-min-columns cw)
+                (min width (/ canvas 2))))))
+
+(defun etaf-telega--pane-style (ref &optional width)
+  "Return the style of a full-height pane with REF.
+A pane with WIDTH keeps it; one without grows into the remaining width."
+  (append (list :ref ref :flex-direction 'column :min-width '(ch 0)
+                :min-height '(lh 0))
+          (if width
+              (list :width width :flex-shrink 0)
+            (list :flex-grow 1 :flex-basis '(ch 0)))))
+
+;;;; Bars
+
+(defun etaf-telega--spacer ()
+  "Return a flexible gap that pushes the following items to the end."
+  (etaf-node 'box (list :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0))
+             (list "")))
+
+(defun etaf-telega--bar-button (icon help action)
+  "Return a flat app bar icon button showing ICON that runs ACTION.
+HELP is its tooltip; the icon is muted and its cell tints on hover."
+  (let ((color (etaf-telega-color :muted)))
+    (etaf-node 'box (list :flex-shrink 0 :padding-inline '(ch 1) :color color
+                          :hover-style (list :background-color
+                                             (etaf-telega-color :surface-2))
+                          :pointer 'hand :help-echo help
+                          :role 'button :aria-label help :on-press action)
+               (list (etaf-ui-icon icon :color color :min-width 1)))))
+
+(defun etaf-telega--bar-menu (icon label items on-select placement)
+  "Return an app bar ICON opening the menu of ITEMS, named LABEL.
+ON-SELECT receives the chosen item's key; PLACEMENT follows `etaf-popover'."
+  (etaf-node 'box (list :flex-shrink 0 :padding-inline '(ch 1)
+                        :color (etaf-telega-color :muted))
+             (list (etaf-node 'etaf-dropdown-menu
+                              (list :icon icon :label label :items items
+                                    :on-select on-select :width '(ch 28)
+                                    :placement placement)
+                              nil))))
+
+(defun etaf-telega--bar (children &optional field)
+  "Return a three-line header band centering the non-nil CHILDREN.
+Every pane's header has this height, so headers side by side line up.
+FIELD non-nil drops the band's own block padding because a search field
+among CHILDREN is already three lines tall."
+  (etaf-node 'flex (list :flex-shrink 0 :flex-direction 'row :align-items 'center
+                         :width 'stretch
+                         :padding (list (if field '(lh 0) '(lh 1)) '(ch 1))
+                         :column-gap '(ch 1)
+                         :background-color (etaf-telega-color :surface)
+                         :border-bottom (list '(px 1) 'solid (etaf-telega-color :border)))
+             (delq nil children)))
+
+(defun etaf-telega--bar-title (title subtitle &optional color)
+  "Return bold TITLE in COLOR followed by muted SUBTITLE on one line.
+The title keeps its width first; the subtitle is clipped before it."
+  (etaf-node 'flex (list :flex-direction 'row :column-gap '(ch 2)
+                         :flex-shrink 1 :min-width '(ch 0))
+             (delq nil
+                   (list (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none
+                                               :flex-shrink 1 :min-width '(ch 0))
+                                    (list (etaf-node 'text
+                                                     (list :font-weight 'bold
+                                                           :color (or color (etaf-telega-color :ink)))
+                                                     (list title))))
+                         (and subtitle (not (string-empty-p subtitle))
+                              (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none
+                                                    :flex-shrink 100 :min-width '(ch 0))
+                                         (list (etaf-node 'text (list :color (etaf-telega-color :muted))
+                                                          (list subtitle)))))))))
+
+(defun etaf-telega--list-menu-items (me)
+  "Return the list menu items, headed by account name ME."
+  (list (list :key 'account :label (if (string-empty-p me) "未登录" me)
+              :icon 'account :disabled t)
+        (list :key 'create :label "新建对话" :icon 'plus)
+        (list :key 'join :label "通过链接加入" :icon 'users)
+        (list :key 'theme :label "切换主题" :icon 'settings)
+        (list :key 'close :label "关闭" :icon 'close)))
+
+(etaf-define-component etaf-telega-list-bar (&key model)
+  "Render the list header: the menu, or search's back button, and the search.
+Until the account is ready the empty search field shows the connection
+state instead of its prompt."
   :render
-  (let ((screen (etaf-value (plist-get model :screen))))
-    (etaf-view
-     (flex :flex-direction 'column :width 'stretch :height 'stretch
-        :background-color (etaf-telega-color :bg)
-    (flex :flex-direction 'row :align-items 'center
-          :height '(lh 2) :padding '((lh 0) (ch 2)) :column-gap '(ch 2)
-          :background-color (etaf-telega-color :surface-2)
-          :border-bottom (list '(px 1) 'solid (etaf-telega-color :border))
-      (flex :if (and (not split) (not (eq screen 'root)))
-            :width '(ch 2) :flex-grow 0 :flex-basis '(ch 2) :min-width '(ch 2)
-        (etaf-button :label "‹" :variant 'ghost :on-press on-back))
-      (text :color (etaf-telega-color :ink) :font-weight 'bold
-            (expr (if split
-                      "Telegram"
-                    (pcase screen
-                      ('chat (or (plist-get (etaf-value (plist-get model :chat))
-                                            :title)
-                                 "对话"))
-                      ('describe "资料")
-                      ('actions "消息操作")
-                      (_ "Telegram")))))
-      (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0) "")
-      (text :color (etaf-telega-color :muted)
-            (expr (etaf-value (plist-get model :status)))))
-    ;; Wide layout: the conversation column beside the active screen, split
-    ;; by a draggable divider whose ratio the application owns.
-    (flex :if split :flex-direction 'row :flex-grow 1 :flex-basis '(lh 0)
-          :min-height '(lh 1) :width 'stretch :overflow 'hidden
-      (expr
+  (let* ((status (or (etaf-value (plist-get model :status)) ""))
+         (ready (equal status "就绪"))
+         (me (etaf-telega--plain-text
+              (or (plist-get (etaf-value (plist-get model :me)) :name) ""))))
+    (etaf-telega--bar
+     (list (if (etaf-value (plist-get model :searching))
+               (etaf-telega--bar-button 'chevron-left "退出搜索 (C-g)"
+                                        #'etaf-telega-search-exit)
+             (etaf-telega--bar-menu 'menu "菜单" (etaf-telega--list-menu-items me)
+                                    #'etaf-telega--list-menu-select 'bottom-start))
+           (etaf-view
+            (etaf-search-field :ref 'telega-search :bind (plist-get model :search)
+                               :placeholder (if ready "搜索" status) :icon t
+                               :on-focus #'etaf-telega--search-focused
+                               :on-submit #'etaf-telega--search-submit
+                               :on-cancel #'etaf-telega--search-cancelled)))
+     t)))
+
+(defconst etaf-telega--chat-menu-items
+  '((:key details :label "对话信息" :icon info)
+    (:key search :label "搜索消息" :icon search)
+    (:key newest :label "跳到最新消息" :icon chevron-down)
+    (:key reload :label "重新载入" :icon refresh)
+    (:key back :label "关闭对话" :icon close))
+  "Items of the chat header's more menu.")
+
+(etaf-define-component etaf-telega-chat-bar (&key model back)
+  "Render the open chat's header; BACK adds the return-to-list button.
+The title and member count lead; message search, the details pane switch
+and the more menu end the band.  While searching, a search field takes the
+title's place and the history shows only matching messages."
+  :render
+  (let* ((chat (etaf-value (plist-get model :chat)))
+         (title (or (plist-get chat :title) "?"))
+         (query (etaf-value (plist-get model :chat-search)))
+         (back (and back (etaf-telega--bar-button 'chevron-left "返回会话列表 (q)"
+                                                  #'etaf-telega-back))))
+    (if query
+        (etaf-telega--bar
+         (list (etaf-telega--bar-button 'chevron-left "关闭搜索 (C-g)"
+                                        #'etaf-telega-chat-search-exit)
+               (etaf-view
+                (etaf-search-field :ref 'telega-chat-search
+                                   :bind (plist-get model :chat-search)
+                                   :placeholder "搜索消息" :icon t
+                                   :on-cancel #'etaf-telega--chat-search-cancelled)))
+         t)
+      (etaf-telega--bar
+       (list back
+             (etaf-node 'box (list :flex-shrink 1 :flex-grow 1 :flex-basis '(ch 0)
+                                   :min-width '(ch 0) :padding-inline '(ch 1))
+                        (list (etaf-telega--bar-title (etaf-telega--plain-text title)
+                                                      (etaf-telega--chat-meta chat))))
+             (etaf-telega--bar-button 'search "搜索消息 (/)" #'etaf-telega-chat-search)
+             (etaf-telega--bar-button 'sidebar "对话信息 (C-c i)"
+                                      #'etaf-telega-toggle-details)
+             (etaf-telega--bar-menu 'more-vertical "更多" etaf-telega--chat-menu-items
+                                    #'etaf-telega--chat-menu-select 'bottom-end))))))
+
+;;;; Conversation list
+
+(defun etaf-telega--clip (text color &rest props)
+  "Return one line of TEXT in COLOR clipped to the width it is given.
+In a row it takes the free width.  PROPS add text style such as
+`:font-weight'."
+  (etaf-node 'box (list :flex-grow 1 :flex-basis 'auto :flex-shrink 1
+                        :width 'stretch :min-width '(ch 0)
+                        :overflow 'hidden :wrap-mode 'none)
+             (list (etaf-node 'text (append (list :color color) props) (list text)))))
+
+(defun etaf-telega--unread-badge (unread muted)
+  "Return the pill counting UNREAD messages, gray when MUTED."
+  (etaf-node 'box (list :padding-inline '(ch 1) :font-weight 'bold
+                        :color (if muted (etaf-telega-color :ink) "#FFFFFF")
+                        :background-color (if muted (etaf-telega-color :border)
+                                            (etaf-telega-color :accent)))
+             (list (etaf-telega--count-label unread))))
+
+(etaf-define-component etaf-telega-chat-row (&key chat selected)
+  "Render CHAT as a four-line row; SELECTED is the cursor selector.
+A centered round avatar sits beside the title and time over two preview lines:
+a group's last sender over its text, or the text wrapped across both.  The
+unread count, or the pin, ends the last line.  A hairline under the text
+column separates rows without crossing the avatars."
+  :render
+  (let* ((id (plist-get chat :id))
+         (title (or (plist-get chat :title) "?"))
+         (unread (or (plist-get chat :unread) 0))
+         (mention (or (plist-get chat :mention) 0))
+         (muted (plist-get chat :muted))
+         (author (plist-get chat :author))
+         (preview (etaf-telega--plain-text (or (plist-get chat :preview) "")))
+         (current (funcall selected id))
+         (muted-color (if current (etaf-telega-color :ink) (etaf-telega-color :muted))))
+    (etaf-node
+     'flex (list :ref (etaf-telega--ref 'chat id)
+                 :flex-direction 'row :align-items 'flex-start :width 'stretch
+                 :padding-inline '(ch 1) :column-gap '(ch 1)
+                 :background-color (if current (etaf-telega-color :selected)
+                                     (etaf-telega-color :bg))
+                 :hover-style (unless current
+                                (list :background-color (etaf-telega-color :surface-2)))
+                 :role 'button :tab-index 0
+                 :on-press (lambda () (etaf-telega-open-chat id)))
+     (list
+      (etaf-node 'etaf-avatar
+                 (list :name title :initials (etaf-telega--initial title)
+                       :src (plist-get chat :photo) :size '(ch 6) :lines 4
+                       :background (etaf-telega-sender-color title))
+                 nil)
+      (etaf-node
+       'flex (list :flex-direction 'column :flex-grow 1 :flex-basis '(ch 0)
+                   :min-width '(ch 0) :padding-top '(lh 1)
+                   :border-bottom (list '(px 1) 'solid
+                                        (if current (etaf-telega-color :selected)
+                                          (etaf-telega-color :hairline))))
        (list
-        (etaf-view
-         (etaf-splitter
-          :orientation 'horizontal :ratio list-ratio
-          :min-ratio 0.15 :max-ratio 0.6
-          :on-change on-resize-list
-          (slot :name 'first
-            (flex :flex-direction 'column :width 'stretch :height 'stretch
-                  :overflow 'hidden
-                  :background-color (etaf-telega-color :surface)
-                  :border-right (list '(px 1) 'solid (etaf-telega-color :hairline))
-              (etaf-telega-filter-bar :model model :filter-items filter-items
-                                      :on-filter on-filter)
-              (etaf-telega-chat-list :model model :chat-slice chat-slice
-                                     :rows-width (- list-width 2))))
-          (slot :name 'second
-            (flex :flex-direction 'column :width 'stretch :height 'stretch
-                  :overflow 'hidden
-              (flex :if (eq screen 'chat) :flex-direction 'column :flex-grow 1
-                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-                (etaf-telega-chat-pane :model model :message-slice message-slice
-                                       :width width :header t))
-              (flex :if (eq screen 'describe) :flex-direction 'column :flex-grow 1
-                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-                (etaf-telega-describe-screen
-                 :describe (or (etaf-value (plist-get model :describe)) (list))
-                 :on-action on-action :on-back on-back))
-              (flex :if (eq screen 'actions) :flex-direction 'column :flex-grow 1
-                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-                (etaf-telega-actions-screen
-                 :message-slice selected-slice
-                 :on-action on-action :on-back on-back))
-              (flex :if (eq screen 'root) :flex-direction 'column :flex-grow 1
-                    :flex-basis '(lh 0) :min-height '(lh 1) :width 'stretch
-                (etaf-telega-welcome-pane :model model)))))))))
-    ;; Narrow layout: one screen owns the window.
-    (flex :if (and (not split) (eq screen 'root)) :flex-direction 'column
-          :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 1)
-          :width 'stretch :overflow 'hidden
-      (etaf-telega-filter-bar :model model :filter-items filter-items
-                              :on-filter on-filter)
-      (etaf-telega-chat-list :model model :chat-slice chat-slice
-                             :rows-width list-width))
-    (flex :if (and (not split) (eq screen 'describe)) :flex-direction 'column
-          :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 1)
-          :width 'stretch
-      (etaf-telega-describe-screen
-       :describe (or (etaf-value (plist-get model :describe)) (list))
-       :on-action on-action :on-back on-back))
-    (flex :if (and (not split) (eq screen 'actions)) :flex-direction 'column
-          :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 1)
-          :width 'stretch
-      (etaf-telega-actions-screen
-       :message-slice selected-slice
-       :on-action on-action :on-back on-back))
-    (flex :if (and (not split) (eq screen 'chat)) :flex-direction 'column
-          :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 1)
-          :width 'stretch
-      (etaf-telega-chat-pane :model model :message-slice message-slice
-                             :width width :header nil))))))
+        (etaf-node 'flex (list :flex-direction 'row :align-items 'center
+                               :width 'stretch :column-gap '(ch 1))
+                   (delq nil
+                         (list (etaf-telega--clip (etaf-telega--plain-text title)
+                                                  (etaf-telega-color :ink)
+                                                  :font-weight 'bold)
+                               (and muted (etaf-ui-icon 'bell-off :min-width 1
+                                                        :color muted-color))
+                               (etaf-node 'text (list :color muted-color)
+                                          (list (or (plist-get chat :time) ""))))))
+        (etaf-node
+         'flex (list :flex-direction 'row :align-items 'flex-end :width 'stretch
+                     :column-gap '(ch 1))
+         (delq nil
+               (list
+                (if (and author (not (string-empty-p author)))
+                    (etaf-node 'flex (list :flex-direction 'column :flex-grow 1
+                                           :flex-basis '(ch 0) :min-width '(ch 0))
+                               (list (etaf-telega--clip (etaf-telega--plain-text author)
+                                                        (etaf-telega-color :ink))
+                                     (etaf-telega--clip (etaf-telega--one-line preview)
+                                                        muted-color)))
+                  (etaf-node 'box (list :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
+                                        :height '(lh 2) :overflow 'hidden)
+                             (list (etaf-node 'text (list :color muted-color)
+                                              (list (replace-regexp-in-string
+                                                     "[\n\t ]+" " " preview))))))
+                (and (> mention 0)
+                     (etaf-ui-icon 'at :min-width 1 :color (etaf-telega-color :accent)))
+                (cond ((> unread 0) (etaf-telega--unread-badge unread muted))
+                      ((plist-get chat :pinned)
+                       (etaf-ui-icon 'pin :min-width 1 :color muted-color))))))))))))
 
-(defun etaf-telega-view (model width list-width list-ratio split
-                              message-slice chat-slice
-                              filter-items selected-slice
-                              on-filter on-back on-action on-resize-list)
-  "Return the application View for MODEL.
-WIDTH is the message cell count, LIST-WIDTH the conversation-list cell count
-and LIST-RATIO its fraction of the split shell; SPLIT selects the wide
-layout.  MESSAGE-SLICE, CHAT-SLICE, FILTER-ITEMS and SELECTED-SLICE are
-thunks evaluated inside the panes they feed, so a model change re-renders
-only that pane.  ON-RESIZE-LIST receives divider drag gestures."
-  (etaf-view (etaf-telega-shell :model model :width width
-                                :list-width list-width :list-ratio list-ratio
-                                :split split
-                                :message-slice message-slice
-                                :chat-slice chat-slice
-                                :filter-items filter-items
-                                :selected-slice selected-slice
-                                :on-filter on-filter :on-back on-back
-                                :on-action on-action
-                                :on-resize-list on-resize-list)))
+(defun etaf-telega--scroll-body (ref &rest props)
+  "Return the style of a scrolling screen body with REF and extra PROPS.
+The body takes the height its fixed siblings leave in the shell."
+  (append (list :ref ref :overflow 'scroll :width 'stretch :flex-grow 1
+                :flex-basis '(lh 0) :min-height '(lh 0))
+          props))
+
+(defconst etaf-telega--search-kinds
+  '((all . "全部") (private . "私聊") (group . "群组") (channel . "频道"))
+  "Kinds of conversation the search tabs narrow results to.")
+
+(defun etaf-telega--search-chats (chats query kind)
+  "Return CHATS of KIND, or `all', whose title or username contains QUERY."
+  (let ((needle (downcase (string-trim (or query "")))))
+    (cl-remove-if-not
+     (lambda (chat)
+       (and (or (eq kind 'all) (eq (plist-get chat :kind) kind))
+            (or (string-empty-p needle)
+                (string-search needle (downcase (etaf-telega--plain-text
+                                                 (or (plist-get chat :title) ""))))
+                (string-search needle (downcase (or (plist-get chat :username) ""))))))
+     chats)))
+
+(defun etaf-telega--list-chats (model)
+  "Return the conversations MODEL's list pane shows, in order.
+While searching these are the matches of the query, or the recently
+opened results before anything is typed; otherwise the active filter's."
+  (let ((chats (etaf-value (plist-get model :chats))))
+    (if (etaf-value (plist-get model :searching))
+        (let ((query (or (etaf-value (plist-get model :search)) ""))
+              (kind (etaf-value (plist-get model :search-kind))))
+          (etaf-telega--search-chats
+           (if (string-empty-p (string-trim query))
+               (delq nil (mapcar (lambda (id)
+                                   (cl-find id chats :key (lambda (chat) (plist-get chat :id))
+                                            :test #'equal))
+                                 (etaf-value (plist-get model :recent))))
+             chats)
+           query kind))
+      (etaf-telega--filter-chats chats (etaf-value (plist-get model :filter))))))
+
+(defun etaf-telega--frequent-chats (chats count)
+  "Return COUNT conversations of CHATS to offer as frequent contacts.
+People come before groups and channels, each in the list's order."
+  (let ((chats (cl-remove-if (lambda (chat) (plist-get chat :archived)) chats)))
+    (seq-take (append (cl-remove-if-not (lambda (chat) (eq (plist-get chat :kind) 'private))
+                                        chats)
+                      (cl-remove-if (lambda (chat) (eq (plist-get chat :kind) 'private))
+                                    chats))
+              count)))
+
+(defun etaf-telega--section-title (title &optional action label)
+  "Return a muted section TITLE line; LABEL is a link running ACTION."
+  (etaf-node 'flex (list :flex-direction 'row :width 'stretch
+                         :padding-inline '(ch 2) :padding-top '(lh 1))
+             (delq nil
+                   (list (etaf-node 'text (list :font-weight 'bold
+                                                :color (etaf-telega-color :muted))
+                                    (list title))
+                         (etaf-telega--spacer)
+                         (and action
+                              (etaf-node 'box (list :color (etaf-telega-color :accent)
+                                                    :pointer 'hand :role 'button
+                                                    :help-echo label :on-press action)
+                                         (list label)))))))
+
+(defun etaf-telega--frequent-contact (chat)
+  "Return CHAT as a frequent contact: its avatar over its clipped name."
+  (let* ((id (plist-get chat :id))
+         (title (or (plist-get chat :title) "?")))
+    (etaf-node 'flex (list :flex-direction 'column :align-items 'center
+                           :width '(ch 8) :flex-shrink 0
+                           :pointer 'hand :role 'button :help-echo title
+                           :hover-style (list :background-color
+                                              (etaf-telega-color :surface-2))
+                           :on-press (lambda () (etaf-telega-open-chat id)))
+               (list (etaf-node 'etaf-avatar
+                                (list :name title :initials (etaf-telega--initial title)
+                                      :src (plist-get chat :photo) :size '(ch 6) :lines 4
+                                      :background (etaf-telega-sender-color title))
+                                nil)
+                     (etaf-node 'box (list :width 'stretch :overflow 'hidden
+                                           :wrap-mode 'none :text-align 'center)
+                                (list (etaf-node 'text (list :color (etaf-telega-color :ink))
+                                                 (list (etaf-telega--plain-text title)))))))))
+
+(etaf-define-component etaf-telega-search-row (&key chat selected)
+  "Render CHAT as a two-line search result; SELECTED is the cursor selector.
+A two-line avatar sits beside the title over its member count or presence."
+  :render
+  (let* ((id (plist-get chat :id))
+         (title (or (plist-get chat :title) "?"))
+         (current (funcall selected id)))
+    (etaf-node
+     'flex (list :ref (etaf-telega--ref 'chat id)
+                 :flex-direction 'row :align-items 'center :width 'stretch
+                 :padding-inline '(ch 2) :column-gap '(ch 2)
+                 :background-color (if current (etaf-telega-color :selected)
+                                     (etaf-telega-color :bg))
+                 :hover-style (unless current
+                                (list :background-color (etaf-telega-color :surface-2)))
+                 :role 'button :tab-index 0
+                 :on-press (lambda () (etaf-telega-open-chat id)))
+     (list (etaf-node 'etaf-avatar
+                      (list :name title :initials (etaf-telega--initial title)
+                            :src (plist-get chat :photo) :size '(ch 4) :lines 2
+                            :background (etaf-telega-sender-color title))
+                      nil)
+           (etaf-node 'flex (list :flex-direction 'column :flex-grow 1
+                                  :flex-basis '(ch 0) :min-width '(ch 0))
+                      (list (etaf-telega--clip (etaf-telega--plain-text title)
+                                               (etaf-telega-color :ink)
+                                               :font-weight 'bold)
+                            (etaf-telega--clip (etaf-telega--chat-meta chat)
+                                               (if current (etaf-telega-color :ink)
+                                                 (etaf-telega-color :muted)))))))))
+
+(defun etaf-telega--muted-line (text)
+  "Return a padded muted line of TEXT for an empty list."
+  (etaf-node 'box (list :padding '((lh 1) (ch 2)) :color (etaf-telega-color :muted))
+             (list text)))
+
+(etaf-define-component etaf-telega-search-results (&key model selected columns)
+  "Render the list search below the header in a pane COLUMNS wide.
+Kind tabs narrow the results.  Before anything is typed the frequent
+contacts and the recently opened results show; afterwards the matching
+conversations.  SELECTED is the cursor selector."
+  :render
+  (let* ((query (string-trim (or (etaf-value (plist-get model :search)) "")))
+         (chats (etaf-value (plist-get model :chats)))
+         (results (etaf-telega--list-chats model))
+         (rows (mapcar (lambda (chat)
+                         (etaf-view (etaf-telega-search-row :key (plist-get chat :id)
+                                                            :chat chat
+                                                            :selected selected)))
+                       results)))
+    (etaf-node
+     'flex (list :flex-direction 'column :width 'stretch :flex-grow 1
+                 :flex-basis '(lh 0) :min-height '(lh 0))
+     (list
+      (etaf-node
+       'flex (list :flex-shrink 0 :flex-direction 'row :width 'stretch
+                   :padding-inline '(ch 1)
+                   :border-bottom (list '(px 1) 'solid (etaf-telega-color :border)))
+       (list (etaf-view
+              (etaf-tabs :items (mapcar (lambda (entry)
+                                          (list :key (car entry) :label (cdr entry)))
+                                        etaf-telega--search-kinds)
+                         :active (etaf-value (plist-get model :search-kind))
+                         :on-change #'etaf-telega--search-kind-select))))
+      (etaf-node
+       'box (etaf-telega--scroll-body 'telega-list)
+       (list
+        (etaf-node
+         'flex (list :flex-direction 'column :width 'stretch)
+         (if (string-empty-p query)
+             (let ((frequent (etaf-telega--frequent-chats
+                              chats (max 1 (/ (- columns 2) 10)))))
+               (append
+                (when frequent
+                  (list (etaf-telega--section-title "常用联系人")
+                        (etaf-node 'flex (list :flex-direction 'row :width 'stretch
+                                               :padding '((lh 1) (ch 1))
+                                               :column-gap '(ch 2))
+                                   (mapcar #'etaf-telega--frequent-contact frequent))))
+                (list (etaf-telega--section-title
+                       "最近" (and results #'etaf-telega-search-clear-recent) "清除"))
+                (or rows (list (etaf-telega--muted-line "打开的搜索结果会列在这里")))))
+           (or rows (list (etaf-telega--muted-line
+                           (format "没有找到“%s”" query))))))))))))
+
+(etaf-define-component etaf-telega-chat-list (&key model width columns)
+  "Render MODEL's list pane: header, filter tabs and scrolling conversations.
+WIDTH fixes the pane beside the chat; without it the pane fills the window.
+COLUMNS is the pane's width in columns.  While searching the search results
+replace the tabs and the list."
+  :bindings ((selected (etaf-selector (plist-get model :cursor))))
+  :render
+  (etaf-node
+   'flex (etaf-telega--pane-style 'telega-list-pane width)
+   (list
+    (etaf-view (etaf-telega-list-bar :model model))
+    (if (etaf-value (plist-get model :searching))
+        (etaf-view (etaf-telega-search-results :model model :selected selected
+                                               :columns columns))
+      (etaf-node
+       'flex (list :flex-direction 'column :width 'stretch :flex-grow 1
+                   :flex-basis '(lh 0) :min-height '(lh 0))
+       (list
+        (etaf-node
+         'flex (list :flex-shrink 0 :flex-direction 'row :width 'stretch
+                     :padding-inline '(ch 1)
+                     :border-bottom (list '(px 1) 'solid (etaf-telega-color :border)))
+         (list (etaf-view
+                (etaf-tabs :items (etaf-telega--filter-items
+                                   (etaf-value (plist-get model :chats)))
+                           :active (etaf-value (plist-get model :filter))
+                           :on-change #'etaf-telega-select-filter))))
+        (etaf-node
+         'box (etaf-telega--scroll-body 'telega-list)
+         (list
+          (etaf-view
+           (flex :flex-direction 'column :width 'stretch
+             (expr
+              (let ((chats (etaf-telega--list-chats model)))
+                (if chats
+                    (mapcar (lambda (chat)
+                              (etaf-view (etaf-telega-chat-row :key (plist-get chat :id)
+                                                               :chat chat
+                                                               :selected selected)))
+                            chats)
+                  (list (etaf-telega--muted-line
+                         (if (etaf-value (plist-get model :chats))
+                             "这个分组没有对话"
+                           "正在载入对话…"))))))))))))))))
+
+;;;; Chat
+
+(defun etaf-telega--day-label (date)
+  "Return DATE (YYYY-MM-DD) as a day separator label."
+  (cond ((null date) nil)
+        ((equal date (format-time-string "%Y-%m-%d")) "今天")
+        ((equal date (format-time-string "%Y-%m-%d"
+                                         (time-subtract nil (* 24 3600))))
+         "昨天")
+        (t date)))
+
+(defun etaf-telega--media-grid (media kind)
+  "Return (COLUMNS . ROWS) showing MEDIA of KIND at its aspect ratio.
+Photos and videos fit 432x432 pixels and stickers 160x160, measured in the
+frame's character cells so the grid keeps the source's shape."
+  (let* ((cw (max 1 (frame-char-width)))
+         (lh (max 1 (frame-char-height)))
+         (width (max 1 (or (plist-get media :width) 4)))
+         (height (max 1 (or (plist-get media :height) 3)))
+         (limit (if (eq kind 'sticker) '(160 . 160) '(432 . 432)))
+         (scale (min (/ (float (car limit)) width)
+                     (/ (float (cdr limit)) height))))
+    (cons (max 2 (round (/ (* width scale) cw)))
+          (max 1 (round (/ (* height scale) lh))))))
+
+(defun etaf-telega--media-columns (message)
+  "Return the width in columns of MESSAGE's thumbnail, or nil without one."
+  (when-let* ((media (plist-get message :media))
+              ((plist-get media :src))
+              ((display-images-p)))
+    (car (etaf-telega--media-grid media (plist-get message :kind)))))
+
+(defun etaf-telega--media-view (message &optional inset)
+  "Return the clickable thumbnail View of MESSAGE, or nil without one.
+INSET is the image's (TOP . BOTTOM) pixel gap from adjacent text."
+  (when-let* ((media (plist-get message :media))
+              (src (plist-get media :src))
+              ((display-images-p)))
+    (let ((grid (etaf-telega--media-grid media (plist-get message :kind)))
+          (id (plist-get message :id)))
+      (etaf-node 'box (list :overflow 'hidden :flex-shrink 0
+                            :pointer 'hand :help-echo "预览 (RET)" :role 'button
+                            :on-press (lambda () (etaf-telega-open-media id)))
+                 (list (etaf-node 'image
+                                  (list :src src :columns (car grid)
+                                        :rows (cdr grid) :inset inset)
+                                  nil))))))
+
+(defun etaf-telega--media-duration (message)
+  "Return the play prompt shown under MESSAGE's video thumbnail, or nil."
+  (when (and (memq (plist-get message :kind) '(video animation))
+             (etaf-telega--media-columns message))
+    (etaf-node 'flex (list :flex-direction 'row :column-gap '(ch 1)
+                           :color (etaf-telega-color :accent))
+               (list (etaf-ui-icon 'play :color (etaf-telega-color :accent))
+                     (etaf-node 'text nil
+                                (list (etaf-telega--duration-label
+                                       (plist-get message :duration))))))))
+
+(defun etaf-telega--duration-label (seconds)
+  "Return SECONDS as a playing time such as 1:05, or a play prompt."
+  (if (and (numberp seconds) (> seconds 0))
+      (format "%d:%02d" (/ seconds 60) (% seconds 60))
+    "播放"))
+
+(defconst etaf-telega-reaction-choices
+  '(("👍" . "👍") ("❤" . "❤️") ("🔥" . "🔥") ("😂" . "😂") ("😮" . "😮")
+    ("😢" . "😢") ("🎉" . "🎉") ("👏" . "👏") ("🙏" . "🙏") ("👌" . "👌")
+    ("🤔" . "🤔") ("💯" . "💯"))
+  "Reactions offered by a message's add-reaction chip, as (KEY . LABEL).")
+
+(defun etaf-telega--message-quote (reply)
+  "Return the quote of REPLY: its sender over one line behind a colored bar."
+  (let ((color (etaf-telega-sender-color (plist-get reply :sender))))
+    (etaf-node 'flex (list :flex-direction 'column :min-width '(ch 0)
+                           :align-self 'stretch :padding-inline '(ch 1)
+                           :border-left (list '(px 3) 'solid color))
+               (list (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
+                                (list (etaf-node 'text (list :font-weight 'bold :color color)
+                                                 (list (etaf-telega--plain-text
+                                                        (or (plist-get reply :sender) "?"))))))
+                     (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
+                                (list (etaf-node 'text (list :color (etaf-telega-color :muted))
+                                                 (list (etaf-telega--reply-text reply)))))))))
+
+(defun etaf-telega--message-meta (message)
+  "Return MESSAGE's muted meta: views, edited mark, time and delivery mark."
+  (let ((views (plist-get message :views))
+        (muted (etaf-telega-color :muted)))
+    (etaf-node
+     'flex (list :flex-direction 'row :flex-shrink 0 :column-gap '(ch 1)
+                 :color muted)
+     (delq nil
+           (list (when views (etaf-ui-icon 'eye :color muted))
+                 (when views
+                   (etaf-node 'text nil (list (etaf-telega--count-label views))))
+                 (etaf-node 'text nil
+                            (list (concat (if (plist-get message :edited) "已编辑 " "")
+                                          (or (plist-get message :time) "")
+                                          (if (plist-get message :outgoing) " ✓" "")))))))))
+
+(defun etaf-telega--message-body (message reactions)
+  "Return MESSAGE's text and meta rows, with the REACTIONS View or nil.
+The meta ends the text's row when both fit on one line and wraps below
+otherwise, so long text keeps the bubble's full width; with reactions it ends
+their row instead, and a message without text puts it on its own row."
+  (let* ((text (etaf-telega--message-body-text message))
+         (text-view (unless (string-empty-p text)
+                      (etaf-node 'box (list :flex-grow 1 :flex-basis 'auto
+                                            :flex-shrink 1 :min-width '(ch 0))
+                                 (list (etaf-node 'text
+                                                  (list :color (etaf-telega-color :ink))
+                                                  (list text))))))
+         (row (lambda (lead)
+                (etaf-node 'flex (list :flex-direction 'row :align-items 'flex-end
+                                       :justify-content 'flex-end :flex-wrap 'wrap
+                                       :column-gap '(ch 2) :width 'stretch)
+                           (delq nil (list lead (etaf-telega--message-meta message)))))))
+    (if reactions
+        (delq nil (list text-view
+                        (funcall row (etaf-node 'box (list :flex-grow 1 :flex-shrink 1
+                                                           :min-width '(ch 0))
+                                                (list reactions)))))
+      (list (funcall row text-view)))))
+
+(defun etaf-telega--message-parts (message head bubble)
+  "Return the content Views of MESSAGE; HEAD adds the sender name.
+With BUBBLE the thumbnail spans the bubble edge to edge while every other
+part keeps the bubble's inline padding."
+  (let* ((sender (or (plist-get message :sender) "?"))
+         (reply (plist-get message :reply))
+         (reactions (plist-get message :reactions))
+         (id (plist-get message :id))
+         (pad (lambda (view)
+                (if bubble
+                    (etaf-node 'flex (list :flex-direction 'column :width 'stretch
+                                           :min-width '(ch 0) :padding-inline '(ch 2))
+                               (list view))
+                  view))))
+    (append
+     (when head
+       (list (funcall
+              pad (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
+                             (list (etaf-node 'text
+                                              (list :font-weight 'bold
+                                                    :color (if (plist-get message :outgoing)
+                                                               (etaf-telega-color :accent)
+                                                             (etaf-telega-sender-color sender)))
+                                              (list (etaf-telega--plain-text sender))))))))
+     (when reply (list (funcall pad (etaf-telega--message-quote reply))))
+     (delq nil (list (etaf-telega--media-view
+                      message (cons (if (or head reply) 6 0) 6))))
+     (mapcar pad (delq nil (list (etaf-telega--media-duration message))))
+     (mapcar (lambda (line)
+               (funcall pad (etaf-node 'text (list :color (etaf-telega-color :accent))
+                                       (list line))))
+             (etaf-telega--message-extras message))
+     (mapcar pad
+             (etaf-telega--message-body
+              message
+              (when reactions
+                (etaf-view
+                 (etaf-reactions
+                  :items reactions
+                  :choices etaf-telega-reaction-choices
+                  :add-label "添加表情"
+                  :on-toggle (lambda (key) (etaf-telega-react id key))))))))))
+
+(defun etaf-telega--message-gutter (message head)
+  "Return the four-cell gutter of MESSAGE: the avatar when HEAD, else blank."
+  (let ((sender (or (plist-get message :sender) "?")))
+    (if head
+        (etaf-node 'etaf-avatar
+                   (list :name sender :initials (etaf-telega--initial sender)
+                         :src (plist-get message :avatar)
+                         :size '(ch 4) :lines 2
+                         :background (etaf-telega-sender-color sender))
+                   nil)
+      (etaf-node 'box (list :width '(ch 4) :flex-shrink 0) (list "")))))
+
+(defconst etaf-telega--bubble-inner-padding '(lh 0.875)
+  "Bubble block padding between messages of one sender group.
+Each fractional padding line leaves its unpainted rest outside the bubble,
+so consecutive bubbles of a group sit a few pixels apart.")
+
+(defconst etaf-telega--bubble-group-padding '(lh 0.625)
+  "Bubble block padding at a sender group's edge, spacing groups apart.")
+
+(etaf-define-component etaf-telega-message-row
+    (&key message head tail gap separator selected bubble posts)
+  "Render MESSAGE as compact lines or, with BUBBLE, as a Telegram bubble.
+SELECTED is the message selector; the selected message tints a reserved
+two-pixel rule at the row's left, so selection never moves text.  HEAD
+starts a sender group with the avatar and name and TAIL ends it; SEPARATOR
+is the day label shown above.  Compact rows leave a blank line above when
+GAP is non-nil; bubbles instead space groups with their own block padding.
+Every bubble sits at the left like Telegram's wide layout, shrinks to its
+content up to a reading width, and a thumbnail sets its width.  POSTS marks
+channel posts, which carry no avatar gutter."
+  :render
+  (let* ((id (plist-get message :id))
+         (outgoing (plist-get message :outgoing))
+         (rule (if (funcall selected id)
+                   (etaf-telega-color :accent)
+                 (etaf-telega-color :canvas)))
+         (parts (etaf-telega--message-parts message head bubble))
+         (media (and bubble (etaf-telega--media-columns message))))
+    (etaf-node
+     'flex (list :ref (etaf-telega--ref 'message id)
+                 :flex-direction 'column :width 'stretch
+                 :padding-top (if (or separator (and gap (not bubble))) '(lh 1) '(lh 0))
+                 :background-color (etaf-telega-color :chat-bg))
+     (delq
+      nil
+      (list
+       (when separator
+         (etaf-node 'flex (list :flex-direction 'row :justify-content 'center
+                                :width 'stretch :padding-bottom '(lh 1))
+                    (list (etaf-node 'box (list :padding-inline '(ch 2)
+                                                :background-color (etaf-telega-color :surface-2)
+                                                :color (etaf-telega-color :muted))
+                                     (list separator)))))
+       (if bubble
+           (etaf-node
+            'flex (list :flex-direction 'row :align-items 'flex-start :width 'stretch
+                        :padding-inline '(ch 2) :column-gap '(ch 1)
+                        :border-left (list '(px 2) 'solid rule))
+            (delq nil (list (unless posts (etaf-telega--message-gutter message head))
+                  (etaf-node 'flex
+                             (append
+                              (list :flex-direction 'column :flex-shrink 1
+                                    :min-width '(ch 0)
+                                    :padding-top (if head
+                                                     etaf-telega--bubble-group-padding
+                                                   etaf-telega--bubble-inner-padding)
+                                    :padding-bottom (if tail
+                                                        etaf-telega--bubble-group-padding
+                                                      etaf-telega--bubble-inner-padding)
+                                    :border-radius '(px 12)
+                                    :background-color
+                                    (etaf-telega-color (if outgoing :bubble-out :bubble-in)))
+                              (if media
+                                  (list :width (list 'ch media))
+                                (list :max-width '(ch 72))))
+                             parts))))
+         (etaf-node
+          'flex (list :flex-direction 'row :align-items 'flex-start :width 'stretch
+                      :padding-inline '(ch 1) :column-gap '(ch 1))
+          (list (etaf-telega--message-gutter message head)
+                (etaf-node 'flex (list :flex-direction 'column :flex-grow 1
+                                       :flex-basis '(ch 0) :min-width '(ch 0)
+                                       :padding-left '(ch 1)
+                                       :border-left (list '(px 2) 'solid rule))
+                           parts)))))))))
+
+(defun etaf-telega--message-rows (messages selected posts bubble)
+  "Return keyed row Views for MESSAGES with SELECTED as their selector.
+A day separator opens each new date and a sender group starts whenever the
+sender changes or a separator intervenes.  Groups are spaced apart; with
+POSTS, as in a channel, every message is its own group.  BUBBLE renders
+Telegram bubbles instead of compact lines."
+  (let (entries last-date last-sender)
+    (dolist (message messages)
+      (let* ((date (plist-get message :date))
+             (separator (and date (not (equal date last-date))
+                             (etaf-telega--day-label date)))
+             (sender (plist-get message :sender))
+             (head (or posts separator (not (equal sender last-sender)))))
+        (setq last-date (or date last-date) last-sender sender)
+        (push (list message separator (and head t)) entries)))
+    (let (rows (next-head t))
+      (dolist (entry entries)
+        (pcase-let ((`(,message ,separator ,head) entry))
+          (push (etaf-view (etaf-telega-message-row
+                            :key (plist-get message :id) :message message
+                            :head head :tail next-head :gap head
+                            :separator separator
+                            :selected selected :bubble bubble :posts posts))
+                rows)
+          (setq next-head head)))
+      rows)))
+
+(defun etaf-telega--search-messages (messages query)
+  "Return MESSAGES whose text or sender contains QUERY; all when it is blank."
+  (let ((needle (downcase (string-trim (or query "")))))
+    (if (string-empty-p needle)
+        messages
+      (cl-remove-if-not
+       (lambda (message)
+         (or (string-search needle (downcase (etaf-telega--plain-text
+                                              (or (plist-get message :text) ""))))
+             (string-search needle (downcase (etaf-telega--plain-text
+                                              (or (plist-get message :sender) ""))))))
+       messages))))
+
+(etaf-define-component etaf-telega-chat-screen (&key model layout)
+  "Render MODEL's chat pane: header, scrolling history and fixed composer.
+LAYOUT `compact' shows Telega's lines with a back button; the wider layouts
+show Telegram bubbles.  The history starts at and follows its newest message
+until the reader scrolls away; reaching its top asks for older messages."
+  :bindings ((selected (etaf-selector (plist-get model :selected))))
+  :render
+  (etaf-node
+   'flex (etaf-telega--pane-style 'telega-chat-pane)
+   (list
+    (etaf-view (etaf-telega-chat-bar :model model :back (eq layout 'compact)))
+    (etaf-node
+     'box (etaf-telega--scroll-body 'telega-history
+                                    :scroll-anchor 'end
+                                    :background-color (etaf-telega-color :chat-bg)
+                                    :on-scroll #'etaf-telega--history-scrolled)
+     (list
+      (etaf-view
+       (flex :flex-direction 'column :width 'stretch :padding-bottom '(lh 1)
+             :background-color (etaf-telega-color :chat-bg)
+         (expr
+          (let* ((loaded (etaf-value (plist-get model :messages)))
+                 (query (etaf-value (plist-get model :chat-search)))
+                 (messages (etaf-telega--search-messages loaded query)))
+            (if messages
+                (etaf-telega--message-rows
+                 messages selected
+                 (eq (plist-get (etaf-value (plist-get model :chat)) :kind) 'channel)
+                 (not (eq layout 'compact)))
+              (list (etaf-telega--muted-line
+                     (if loaded
+                         (format "已载入的消息中没有“%s”" (string-trim query))
+                       "正在载入消息…"))))))))))
+    (etaf-view
+     (flex :flex-shrink 0 :flex-direction 'column :width 'stretch
+           :padding '((lh 1) (ch 2))
+           :background-color (etaf-telega-color :surface)
+           :border-top (list '(px 1) 'solid (etaf-telega-color :border))
+       (expr (when-let* ((label (etaf-telega--compose-label
+                                 (etaf-value (plist-get model :compose)))))
+               (etaf-view
+                (flex :flex-direction 'row :column-gap '(ch 1) :width 'stretch
+                  (text :color (etaf-telega-color :accent) "▎")
+                  (text :color (etaf-telega-color :accent) (expr label))
+                  (expr (etaf-telega--spacer))
+                  (text :color (etaf-telega-color :muted) "C-c C-k 取消")))))
+       (flex :flex-direction 'row :align-items 'center :width 'stretch
+             :column-gap '(ch 1)
+         (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
+           (etaf-text-input
+            :ref 'telega-composer :bind (plist-get model :draft)
+            :label "消息" :hide-label t :rows 1 :width 'stretch :variant 'plain
+            :placeholder "写消息…  (i 输入 · RET 发送 · S-RET 换行)"
+            :submit-on-return t
+            :on-submit #'etaf-telega-send
+            :on-cancel #'etaf-telega--keep-draft))
+         (etaf-ui-icon :name 'send :color (etaf-telega-color :accent)
+                       :help-echo "发送 (RET)"
+                       :on-press (lambda ()
+                                   (etaf-telega-send
+                                    (etaf-value (plist-get model :draft)))))))))))
+
+(defun etaf-telega--empty-chat-pane ()
+  "Return the chat pane shown beside the list before a chat is opened."
+  (etaf-node 'flex (append (etaf-telega--pane-style 'telega-chat-pane)
+                           (list :justify-content 'center :align-items 'center
+                                 :background-color (etaf-telega-color :chat-bg)))
+             (list (etaf-node 'box (list :padding-inline '(ch 2)
+                                         :background-color (etaf-telega-color :surface-2)
+                                         :color (etaf-telega-color :muted))
+                              (list "选择一个对话开始聊天")))))
+
+(defun etaf-telega--details-section (title children)
+  "Return a details section headed by muted TITLE over CHILDREN."
+  (etaf-node 'flex (list :flex-direction 'column :width 'stretch
+                         :padding-top '(lh 1))
+             (cons (etaf-node 'text (list :font-weight 'bold
+                                          :color (etaf-telega-color :muted))
+                              (list title))
+                   children)))
+
+(defun etaf-telega--details-media (messages)
+  "Return thumbnail rows of the newest photos and videos among MESSAGES."
+  (let* ((cw (max 1 (frame-char-width)))
+         (lh (max 1 (frame-char-height)))
+         (columns 10)
+         (rows (max 2 (round (/ (* columns cw) (float lh)))))
+         (items (seq-take (nreverse (seq-filter
+                                     (lambda (message)
+                                       (plist-get (plist-get message :media) :src))
+                                     messages))
+                          9))
+         lines)
+    (while items
+      (push (etaf-node
+             'flex (list :flex-direction 'row :column-gap '(ch 1) :padding-top '(lh 0))
+             (mapcar (lambda (message)
+                       (let ((id (plist-get message :id)))
+                         (etaf-node 'box (list :overflow 'hidden :pointer 'hand
+                                               :role 'button :help-echo "预览"
+                                               :on-press (lambda () (etaf-telega-open-media id)))
+                                    (list (etaf-node 'image
+                                                     (list :src (plist-get (plist-get message :media) :src)
+                                                           :columns columns :rows rows)
+                                                     nil)))))
+                     (seq-take items 3)))
+            lines)
+      (setq items (nthcdr 3 items)))
+    (nreverse lines)))
+
+(defun etaf-telega--details-links (messages)
+  "Return rows of the newest web pages shared among MESSAGES."
+  (mapcar (lambda (message)
+            (let ((link (plist-get message :link))
+                  (id (plist-get message :id)))
+              (etaf-node 'flex (list :flex-direction 'column :width 'stretch
+                                     :padding-top '(lh 0) :pointer 'hand :role 'button
+                                     :hover-style (list :background-color
+                                                        (etaf-telega-color :surface-2))
+                                     :on-press (lambda () (etaf-telega-show-message id)))
+                         (list (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
+                                          (list (etaf-node 'text (list :color (etaf-telega-color :accent))
+                                                           (list (etaf-telega--one-line
+                                                                  (let ((title (plist-get link :title)))
+                                                                    (if (string-empty-p title)
+                                                                        (plist-get link :site)
+                                                                      title)))))))
+                               (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
+                                          (list (etaf-node 'text (list :color (etaf-telega-color :muted))
+                                                           (list (plist-get link :site)))))))))
+          (seq-take (nreverse (seq-filter (lambda (message) (plist-get message :link))
+                                          messages))
+                    6)))
+
+(etaf-define-component etaf-telega-chat-details (&key model width)
+  "Render the open chat's profile, shared media and links.
+WIDTH fixes the pane beside the chat; without it the pane fills the window."
+  :render
+  (let* ((chat (etaf-value (plist-get model :chat)))
+         (messages (etaf-value (plist-get model :messages)))
+         (title (or (plist-get chat :title) "?"))
+         (unread (or (plist-get chat :unread) 0))
+         (chips (delq nil (list (and (plist-get chat :pinned) "置顶")
+                                (and (plist-get chat :muted) "免打扰")
+                                (and (plist-get chat :archived) "已归档")
+                                (and (> unread 0) (format "%s 条未读"
+                                                          (etaf-telega--count-label unread))))))
+         (media (etaf-telega--details-media messages))
+         (links (etaf-telega--details-links messages)))
+    (etaf-node
+     'flex (append (etaf-telega--pane-style 'telega-details-pane width)
+                   (list :background-color (etaf-telega-color :surface))
+                   (and width
+                        (list :border-left (list '(px 1) 'solid
+                                                 (etaf-telega-color :border)))))
+     (list
+      (etaf-telega--bar (list (etaf-node 'box (list :padding-inline '(ch 1))
+                                         (list (etaf-telega--bar-title "对话信息" nil)))
+                              (etaf-telega--spacer)
+                              (etaf-telega--bar-button 'close "关闭 (C-c i)"
+                                                       #'etaf-telega-toggle-details)))
+      (etaf-node
+       'box (etaf-telega--scroll-body 'telega-details :padding '((lh 1) (ch 3)))
+       (list
+        (etaf-node
+         'flex (list :flex-direction 'column :width 'stretch)
+         (delq
+          nil
+          (append
+           (list
+            (etaf-node 'flex (list :flex-direction 'column :align-items 'center
+                                   :width 'stretch)
+                       (list (etaf-node 'etaf-avatar
+                                        (list :name title :initials (etaf-telega--initial title)
+                                              :src (plist-get chat :photo) :size '(ch 10) :lines 5
+                                              :background (etaf-telega-sender-color title))
+                                        nil)
+                             (etaf-node 'box (list :padding-top '(lh 1) :overflow 'hidden
+                                                   :wrap-mode 'none :max-width 'stretch)
+                                        (list (etaf-node 'text (list :font-weight 'bold
+                                                                     :color (etaf-telega-color :ink))
+                                                         (list (etaf-telega--plain-text title)))))
+                             (etaf-node 'text (list :color (etaf-telega-color :muted))
+                                        (list (etaf-telega--chat-meta chat)))))
+            (and chips
+                 (etaf-node 'flex (list :flex-direction 'row :justify-content 'center
+                                        :column-gap '(ch 1) :width 'stretch
+                                        :padding-top '(lh 1))
+                            (mapcar (lambda (chip)
+                                      (etaf-node 'box (list :padding-inline '(ch 1)
+                                                            :background-color (etaf-telega-color :surface-2)
+                                                            :color (etaf-telega-color :muted))
+                                                 (list chip)))
+                                    chips))))
+           (list (and media (etaf-telega--details-section "共享媒体" media))
+                 (and links (etaf-telega--details-section "链接" links))))))))))))
+
+(etaf-define-component etaf-telega-viewer (&key model)
+  "Show MODEL's open photo or video in the in-buffer media viewer."
+  :render
+  (let ((viewer (etaf-value (plist-get model :viewer))))
+    (etaf-node
+     'etaf-media-viewer
+     (list :open (and viewer t)
+           :kind (or (plist-get viewer :kind) 'image)
+           :src (plist-get viewer :src)
+           :source-size (plist-get viewer :size)
+           :title (or (plist-get viewer :title) "")
+           :subtitle (plist-get viewer :subtitle)
+           :caption (plist-get viewer :caption)
+           :on-close #'etaf-telega-close-media
+           :on-previous (and (plist-get viewer :previous)
+                             (lambda () (etaf-telega--viewer-step -1)))
+           :on-next (and (plist-get viewer :next)
+                         (lambda () (etaf-telega--viewer-step 1))))
+     nil)))
+
+;;;; Application
+
+(etaf-define-component etaf-telega-app (&key model)
+  "Render MODEL as the whole client in one window-tall shell.
+The window width selects the layout (see `etaf-telega-split-columns'): one
+compact screen at a time, or the list beside a bubble chat.  The list's
+right edge drags to resize it.  The details pane, when switched on, joins
+the chat, hiding the list when the window cannot fit all three, or
+replaces the compact chat.  The media viewer opens over every pane.  A
+two-finger swipe goes back from a chat or switches filter tabs."
+  :setup (etaf-theme-provide (etaf-telega-theme-defaults))
+  :bindings ((layout (etaf-computed #'etaf-telega--layout))
+             (open (etaf-computed (lambda ()
+                                    (and (etaf-value (plist-get model :chat)) t)))))
+  :render
+  (let* ((layout (etaf-value layout))
+         (open (etaf-value open))
+         (details (and open (etaf-value (plist-get model :details))))
+         (chat-screen (eq (etaf-value (plist-get model :screen)) 'chat))
+         (cw (max 1 (frame-char-width)))
+         (columns (etaf-telega--columns))
+         (panes
+          (if (eq layout 'compact)
+              (list (cond ((and open chat-screen details)
+                           (etaf-view (etaf-telega-chat-details :key 'details
+                                                                :model model)))
+                          ((and open chat-screen)
+                           (etaf-view (etaf-telega-chat-screen :key 'chat :model model
+                                                               :layout layout)))
+                          (t (etaf-view (etaf-telega-chat-list :key 'list :model model
+                                                               :columns columns)))))
+            (let* ((list-px (etaf-telega--list-pixels model))
+                   (show-list (or (not details)
+                                  (>= columns (+ (/ list-px cw)
+                                                 etaf-telega--chat-pane-min-columns
+                                                 etaf-telega--details-pane-columns)))))
+              (append
+               (when show-list
+                 (list (etaf-view (etaf-telega-chat-list
+                                   :key 'list :model model :width (list 'px list-px)
+                                   :columns (/ list-px cw)))
+                       (etaf-view (etaf-pane-resizer
+                                   :key 'resizer :size list-px
+                                   :min (* etaf-telega--list-pane-min-columns cw)
+                                   :max (/ (* columns cw) 2)
+                                   :background (etaf-telega-color :bg)
+                                   :on-change (lambda (pixels)
+                                                (etaf-telega-model-set-list-width
+                                                 model pixels))))))
+               (list (if open
+                         (etaf-view (etaf-telega-chat-screen :key 'chat :model model
+                                                             :layout layout))
+                       (etaf-telega--empty-chat-pane)))
+               (when details
+                 (list (etaf-view (etaf-telega-chat-details
+                                   :key 'details :model model
+                                   :width (list 'ch etaf-telega--details-pane-columns))))))))))
+    (etaf-node
+     'flex (list :flex-direction 'column :width 'stretch :height '(vh 100)
+                 :background-color (etaf-telega-color :bg)
+                 :on-swipe #'etaf-telega-swipe)
+     (list (etaf-node 'flex (list :flex-direction 'row :width 'stretch
+                                  :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 0))
+                      (delq nil panes))
+           (etaf-view (etaf-telega-viewer :model model))))))
 
 (provide 'etaf-telega-views)
 ;;; etaf-telega-views.el ends here
