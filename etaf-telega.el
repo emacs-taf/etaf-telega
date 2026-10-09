@@ -163,6 +163,12 @@
 ;; Send the next message immediately, cancelling the schedule.
 ;; Function: etaf-telega-clear-draft ()
 ;; Discard the composer's text and leave the input (C-c C-d).
+;; Function: etaf-telega-attach (path)
+;; Send the file at PATH, choosing its Telegram kind by extension (C-c C-a).
+;; Function: etaf-telega-send-file-as (kind path)
+;; Send the file at PATH as KIND with the composer draft as caption.
+;; Function: etaf-telega-cancel-upload ()
+;; Cancel the file upload in progress (C-c C-u).
 ;; Function: etaf-telega-reply ()
 ;; Arm a reply to the message under point; the next send quotes it (r).
 ;; Function: etaf-telega-edit ()
@@ -231,6 +237,12 @@
 ;; Function: etaf-telega-backend-search-messages (backend query callback)
 ;; Search the selected chat's full history for QUERY, including messages the
 ;; client has not loaded; CALLBACK receives message projections, newest first.
+;; Function: etaf-telega-backend-send-file (backend chat-id kind path caption options)
+;; Send the file at PATH as KIND (`photo', `video', `voice' or `document')
+;; with CAPTION and OPTIONS; progress arrives through `:upload' and the
+;; accepted message through `:sent'.
+;; Function: etaf-telega-backend-cancel-upload (backend path)
+;; Cancel the pending upload of the file at PATH.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
 ;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.
@@ -270,6 +282,11 @@
 ;; Function: etaf-telega-backend-fake-drafts (backend)
 ;; Return BACKEND's stored draft texts, a hash table from conversation id to
 ;; text.
+;; Function: etaf-telega-backend-fake-files (backend)
+;; Return, newest first, BACKEND's recorded file sends as
+;; (:kind :path :caption :options) plists.
+;; Function: etaf-telega-backend-fake-confirm-file (backend path)
+;; Report the upload of PATH as accepted and append its message.
 ;; Function: etaf-telega-backend-fake-replies (backend)
 ;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
 ;; Function: etaf-telega-backend-fake-natives (backend)

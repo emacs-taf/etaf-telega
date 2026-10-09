@@ -52,7 +52,8 @@
         :send-silent (etaf-ref nil :name 'etaf-telega-send-silent)
         :send-no-preview (etaf-ref nil :name 'etaf-telega-send-no-preview)
         :send-at (etaf-ref nil :name 'etaf-telega-send-at)
-        :send-markdown (etaf-ref nil :name 'etaf-telega-send-markdown)))
+        :send-markdown (etaf-ref nil :name 'etaf-telega-send-markdown)
+        :upload (etaf-ref nil :name 'etaf-telega-upload)))
 
 (defun etaf-telega-model-screen (model)
   "Return MODEL's shown screen, `root' or `chat'."
@@ -347,6 +348,14 @@ KEY is `silent', `no-preview', `at' or `markdown'."
                ('markdown (plist-get model :send-markdown))
                (_ (error "Unknown send option %S" key)))))
     (setf (etaf-value ref) value)))
+
+(defun etaf-telega-model-upload (model)
+  "Return MODEL's pending file upload, a (:path :name :progress) plist, or nil."
+  (etaf-value (plist-get model :upload)))
+
+(defun etaf-telega-model-set-upload (model upload)
+  "Set MODEL's pending file UPLOAD plist, or nil when none is running."
+  (setf (etaf-value (plist-get model :upload)) upload))
 
 (provide 'etaf-telega-model)
 ;;; etaf-telega-model.el ends here

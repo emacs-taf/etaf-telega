@@ -86,6 +86,16 @@
    "purpose": "Leaving a composer saves its draft and reopening restores it."
   },
   {
+   "name": "etaf-telega-tests-send-file-uses-caption-and-progress",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Attaching a file reports progress, uses the draft as caption and clears it."
+  },
+  {
+   "name": "etaf-telega-tests-cancel-upload-stops-the-file",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Cancelling an upload marks it cancelled and clears the status."
+  },
+  {
    "name": "etaf-telega-tests-draft-survives-until-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "A pending send keeps the draft and clears only after acceptance."

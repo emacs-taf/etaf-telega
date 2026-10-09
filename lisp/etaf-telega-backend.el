@@ -27,6 +27,7 @@
 ;;   :updated  (message plist)          message changed elsewhere (content or
 ;;                                      edit), replacing the copy with its id
 ;;   :jump     (list of messages)       a page loaded around one message
+;;   :upload   (:name NAME :progress P) file upload progress, P a fraction
 ;;   :deleted  (id)                     id of a removed message
 ;;   :read     (list of ids)            messages accepted as read
 ;;   :error    (string)                 readable failure
@@ -61,6 +62,10 @@
 ;;                                        conversations matching QUERY
 ;;   (search-messages BACKEND QUERY CALLBACK)  search the selected chat's
 ;;                                        full history for QUERY
+;;   (send-file BACKEND CHAT-ID KIND PATH CAPTION OPTIONS)  send a file
+;;                                        as photo, video, voice or
+;;                                        document
+;;   (cancel-upload BACKEND PATH)         cancel a pending file upload
 ;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
 ;;                                        replying, with send options
 ;;                                        (:silent :no-preview :at :markdown)
@@ -122,6 +127,16 @@ server-side search, not the client's local substring filter.")
 CALLBACK receives message projections, newest first, including messages the
 client has not loaded; QUERY matching is the backend's search.")
 
+(cl-defgeneric etaf-telega-backend-send-file (backend chat-id kind path caption options)
+  "Send the file at PATH to CHAT-ID through BACKEND as KIND.
+KIND is `photo', `video', `voice' or `document'; CAPTION is the text shown
+with it, OPTIONS are the send options of `etaf-telega-backend-send'.  Upload
+progress arrives through the `:upload' callback and the accepted message
+through `:sent'.")
+
+(cl-defgeneric etaf-telega-backend-cancel-upload (backend path)
+  "Cancel BACKEND's pending upload of the file at PATH.")
+
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
 OPTIONS is a plist: `:silent' sends without a notification, `:no-preview'
@@ -161,7 +176,7 @@ with a private-chat model, such as Telega, creates the missing chat.")
 
 (cl-defstruct etaf-telega-backend-fake
   chats histories sent responder callbacks chat-id replies next-sent-id natives
-  sends drafts dormant)
+  sends drafts dormant files)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder dormant)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -346,6 +361,49 @@ them like a server-side search does."
                                      (downcase (or (plist-get message :text) "")))))
                messages)))))
 
+(cl-defmethod etaf-telega-backend-send-file ((backend etaf-telega-backend-fake)
+                                             _chat-id kind path caption options)
+  "Record the file send for KIND at PATH and report a first progress step."
+  (push (list :kind kind :path path :caption caption :options options)
+        (etaf-telega-backend-fake-files backend))
+  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend) :upload)))
+    (funcall report (list :name (file-name-nondirectory path) :progress 0.45)))
+  path)
+
+(defun etaf-telega-backend-fake-confirm-file (backend path)
+  "Report the upload of PATH as accepted and append its message.
+The message id follows the stored history, like
+`etaf-telega-backend-fake-complete'."
+  (when-let* ((record (cl-find path (etaf-telega-backend-fake-files backend)
+                               :key (lambda (item) (plist-get item :path))
+                               :test #'equal)))
+    (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+           (history (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+           (base (max (or (etaf-telega-backend-fake-next-sent-id backend) 0)
+                      (or (cl-loop for message in history
+                                   maximize (or (plist-get message :id) 0))
+                          0)))
+           (id (1+ base)))
+      (setf (etaf-telega-backend-fake-next-sent-id backend) id)
+      (let ((message (list :id id :outgoing t :sender "我" :time "" :date ""
+                           :kind (if (eq (plist-get record :kind) 'document)
+                                     'file
+                                   (plist-get record :kind))
+                           :text (or (plist-get record :caption) "")
+                           :file (list :name (file-name-nondirectory path) :size 0))))
+        (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                       :sent)))
+          (funcall report message))))))
+
+(cl-defmethod etaf-telega-backend-cancel-upload ((backend etaf-telega-backend-fake)
+                                                 path)
+  "Mark PATH's record in BACKEND as cancelled."
+  (when-let* ((record (cl-find path (etaf-telega-backend-fake-files backend)
+                               :key (lambda (item) (plist-get item :path))
+                               :test #'equal)))
+    (plist-put record :cancelled t))
+  path)
+
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
 
@@ -509,6 +567,9 @@ like a real sent message instead of colliding with existing ids."
                   (chat date &optional callback))
 (declare-function telega--setChatDraftMessage "telega-tdlib"
                   (chat &optional draft-msg))
+(declare-function telega--deleteMessages "telega-tdlib" (messages &optional revoke))
+(declare-function telega--on-updateFile "telega-tdlib-events" (event))
+(declare-function telega-file--uploading-progress "telega-core" (file))
 (declare-function telega--searchChatsOnServer "telega-tdlib"
                   (query &optional limit callback))
 (declare-function telega--searchChatMessages "telega-tdlib"
@@ -525,7 +586,8 @@ like a real sent message instead of colliding with existing ids."
 (cl-defstruct (etaf-telega-backend-telega
                (:constructor etaf-telega-backend-telega-create))
   callbacks chat-id pending
-  (raws (make-hash-table :test #'equal)))
+  (raws (make-hash-table :test #'equal))
+  uploads)
 
 (defvar etaf-telega-backend-telega-instances nil
   "Live telega backends observing the shared Telega event stream.")
@@ -1419,9 +1481,95 @@ Telega's commands resolve their target through `telega-chat-at' and
      :after etaf-telega-backend-telega--message-changed)
     (telega--on-updateDeleteMessages :after
                                      etaf-telega-backend-telega--messages-deleted)
+    (telega--on-updateFile :after etaf-telega-backend-telega--file-updated)
     (telega-chat-at :before-until etaf-telega-backend-telega--chat-at)
     (telega-msg-at :before-until etaf-telega-backend-telega--msg-at))
   "Advices the Telega backend installs while any instance is live.")
+
+(defun etaf-telega-backend-telega--file-imc (kind path caption)
+  "Return the input message content for KIND at PATH with CAPTION."
+  (let ((ifile (list :@type "inputFileLocal" :path path))
+        (text (and caption (not (string-empty-p caption))
+                    (list :@type "formattedText" :text caption))))
+    (append
+     (pcase kind
+       ('photo (list :@type "inputMessagePhoto"
+                     :photo (list :@type "inputPhoto" :photo ifile)))
+       ('video (list :@type "inputMessageVideo"
+                     :video (list :@type "inputVideo" :video ifile
+                                  :supports_streaming t)))
+       ('voice (list :@type "inputMessageVoiceNote"
+                     :voice_note ifile :duration 0))
+       (_ (list :@type "inputMessageDocument"
+                :document (list :@type "inputDocument" :document ifile
+                                :disable_content_type_detection :false))))
+     (when text (list :caption text)))))
+
+(cl-defmethod etaf-telega-backend-send-file ((backend etaf-telega-backend-telega)
+                                             chat-id kind path caption options)
+  "Send the file at PATH as KIND through Telega, with CAPTION and OPTIONS."
+  (let* ((chat (and chat-id (telega-chat-get chat-id)))
+         (name (file-name-nondirectory path))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (send-options (let ((silent (plist-get options :silent))
+                             (at (plist-get options :at))
+                             (flags nil))
+                         (when silent (setq flags (list :disable_notification t)))
+                         (when at
+                           (setq flags (append flags
+                                               (list :scheduling_state
+                                                     (list :@type "messageSchedulingStateSendAtDate"
+                                                           :send_date (round at))))))
+                         (when flags
+                           (cons :@type (cons "messageSendOptions" flags))))))
+    (unless chat (error "没有选中的对话"))
+    (condition-case err
+        (telega--sendMessage
+         chat (etaf-telega-backend-telega--file-imc kind path caption)
+         nil send-options
+         :callback
+         (lambda (message)
+           (etaf-telega-backend-telega--guard
+            backend "发送附件"
+            (lambda ()
+              (push (list :path path :name name :message message)
+                    (etaf-telega-backend-telega-uploads backend))
+              (when-let* ((report (plist-get callbacks :upload)))
+                (funcall report (list :name name :progress 0)))
+              (when-let* ((report (plist-get callbacks :sent)))
+                (funcall report
+                         (etaf-telega-backend-telega--project-message
+                          backend message)))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))
+    path))
+
+(cl-defmethod etaf-telega-backend-cancel-upload ((backend etaf-telega-backend-telega)
+                                                 path)
+  "Cancel BACKEND's pending upload of PATH by deleting its message."
+  (when-let* ((upload (cl-find path (etaf-telega-backend-telega-uploads backend)
+                               :key (lambda (item) (plist-get item :path))
+                               :test #'equal))
+              (message (plist-get upload :message)))
+    (setf (etaf-telega-backend-telega-uploads backend)
+          (delq upload (etaf-telega-backend-telega-uploads backend)))
+    (ignore-errors (telega--deleteMessages (list message) nil)))
+  path)
+
+(defun etaf-telega-backend-telega--file-updated (event)
+  "Report upload progress of EVENT's file to backends whose uploads match it."
+  (let* ((file (plist-get event :file))
+         (path (ignore-errors (plist-get (plist-get file :local) :path))))
+    (when (and path (stringp path))
+      (dolist (backend etaf-telega-backend-telega-instances)
+        (dolist (upload (etaf-telega-backend-telega-uploads backend))
+          (when (equal path (plist-get upload :path))
+            (let ((progress (ignore-errors (telega-file--uploading-progress file)))
+                  (report (plist-get (etaf-telega-backend-telega-callbacks backend)
+                                     :upload)))
+              (when (and (numberp progress) report)
+                (funcall report (list :name (plist-get upload :name)
+                                      :progress progress))))))))))
 
 (cl-defmethod etaf-telega-backend-stop ((backend etaf-telega-backend-telega))
   "Stop observing Telega without closing its server or account."

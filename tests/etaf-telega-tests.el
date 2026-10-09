@@ -285,6 +285,38 @@ fake backend's send responder."
       (etaf-telega-open-chat 2)
       (should (equal (etaf-telega-test--info :draft) "群草稿")))))
 
+(ert-deftest etaf-telega-tests-send-file-uses-caption-and-progress ()
+  "Attaching a file reports progress, uses the draft as caption and clears it."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 文件说明")
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-send-file-as 'document "/tmp/notes.txt")
+      (let ((record (car (etaf-telega-backend-fake-files backend))))
+        (should (equal (plist-get record :kind) 'document))
+        (should (equal (plist-get record :path) "/tmp/notes.txt"))
+        (should (equal (plist-get record :caption) "文件说明")))
+      (let ((status (etaf-telega-test--info :status)))
+        (should (string-search "正在上传" status))
+        (should (string-search "45%" status)))
+      (etaf-telega-backend-fake-confirm-file backend "/tmp/notes.txt")
+      (should (equal (etaf-telega-test--info :status) "就绪"))
+      (should (equal (etaf-telega-test--info :draft) ""))
+      (should (string-search "notes.txt" (etaf-telega-test--text))))))
+
+(ert-deftest etaf-telega-tests-cancel-upload-stops-the-file ()
+  "Cancelling an upload marks it cancelled and clears the status."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-send-file-as 'photo "/tmp/pic.png")
+      (etaf-telega-cancel-upload)
+      (should (equal (plist-get (car (etaf-telega-backend-fake-files backend))
+                                :cancelled)
+                     t))
+      (should (equal (etaf-telega-test--info :status) "已取消上传")))))
+
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
   "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))

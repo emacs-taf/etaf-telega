@@ -214,6 +214,22 @@ Each chip clears or toggles its option."
                              :padding-bottom '(lh 1))
                  chips))))
 
+(defun etaf-telega--upload-strip (model)
+  "Return the pending upload's progress line, or nil."
+  (let ((upload (etaf-value (plist-get model :upload))))
+    (when upload
+      (etaf-node 'flex (list :flex-direction 'row :align-items 'center
+                             :column-gap '(ch 1) :width 'stretch
+                             :padding-bottom '(lh 1))
+                 (list (etaf-node 'text (list :color (etaf-telega-color :accent))
+                                  (list (format "正在上传 %s：%d%%"
+                                                (or (plist-get upload :name) "文件")
+                                                (round (* 100
+                                                          (or (plist-get upload :progress)
+                                                              0))))))
+                       (etaf-node 'text (list :color (etaf-telega-color :muted))
+                                  (list "C-c C-u 取消")))))))
+
 (defun etaf-telega--group-digits (count)
   "Return natural number COUNT with thousands separated by commas."
   (let ((digits (number-to-string count)))
@@ -1143,6 +1159,7 @@ until the reader scrolls away; reaching its top asks for older messages."
                   (text :color (etaf-telega-color :accent) (expr label))
                   (expr (etaf-telega--spacer))
                   (text :color (etaf-telega-color :muted) "C-c C-k 取消")))))
+       (expr (etaf-telega--upload-strip model))
        (expr (etaf-telega--send-options-strip model))
        (flex :flex-direction 'row :align-items 'center :width 'stretch
              :column-gap '(ch 1)

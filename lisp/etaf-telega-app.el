@@ -77,6 +77,9 @@ Tests bind this to a fake backend factory so no network is touched.")
 (defconst etaf-telega--input-history-limit 50
   "Sent texts remembered per conversation for M-p and M-n.")
 
+(defvar etaf-telega--upload-ref nil
+  "Unused placeholder removed; uploads live on the model.")
+
 (defconst etaf-telega--history-retry-limit 2
   "Empty history answers retried before the history counts as complete.
 TDLib answers its first requests for a chat from the local database and may
@@ -294,6 +297,9 @@ the newest message of the reported page, which is what a date jump wants."
                   (etaf-telega-model-set-draft model ""))
                 (etaf-telega--save-draft
                  (plist-get (etaf-telega-model-chat model) :id) "")
+                (when (etaf-telega-model-upload model)
+                  (etaf-telega-model-set-upload model nil)
+                  (etaf-telega-model-set-status model "就绪"))
                 (etaf-telega-model-set-compose model nil)))
     (list :status (report (lambda (status)
                             (etaf-telega-model-set-status
@@ -316,6 +322,8 @@ the newest message of the reported page, which is what a date jump wants."
                               (etaf-telega-model-replace-message model message))))
           :updated (report #'etaf-telega--on-updated)
           :jump (report #'etaf-telega--on-jump)
+          :upload (report (lambda (event)
+                            (etaf-telega--on-upload model event)))
           :deleted (report #'etaf-telega-model-remove-message model)
           :message (report #'etaf-telega-model-append-message model)
           :error (report (lambda (text)
@@ -631,6 +639,8 @@ Each command operates on the message under point.")
                     ("C-c C-m" . etaf-telega-toggle-markdown)
                     ("C-c C-t" . etaf-telega-schedule-send)
                     ("C-c C-d" . etaf-telega-clear-draft)
+                    ("C-c C-a" . etaf-telega-attach)
+                    ("C-c C-u" . etaf-telega-cancel-upload)
                     ("q" . etaf-telega-back) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
     (define-key map (kbd "M-g") etaf-telega-chat-fastnav-map)
@@ -1067,8 +1077,10 @@ history and closes the search."
     (define-key map (kbd "C-c C-m") #'etaf-telega-toggle-markdown)
     (define-key map (kbd "C-c C-t") #'etaf-telega-schedule-send)
     (define-key map (kbd "C-c C-d") #'etaf-telega-clear-draft)
+    (define-key map (kbd "C-c C-a") #'etaf-telega-attach)
+    (define-key map (kbd "C-c C-u") #'etaf-telega-cancel-upload)
     map)
-  "Composer keys: sent texts and send options.")
+  "Composer keys: sent texts, send options and attachments.")
 
 (defun etaf-telega--reset-input-history ()
   "Stop browsing the open conversation's input history."
@@ -1198,6 +1210,68 @@ tomorrow when that time has already passed."
         (float-time (if (time-less-p time (current-time))
                         (time-add time 86400)
                       time))))))
+
+(defun etaf-telega--file-kind (path)
+  "Return the Telegram kind for the file at PATH from its extension."
+  (pcase (downcase (or (file-name-extension path) ""))
+    ((or "png" "jpg" "jpeg" "gif" "webp" "heic" "bmp") 'photo)
+    ((or "mp4" "mov" "m4v" "mkv" "webm" "avi") 'video)
+    ((or "ogg" "oga" "opus" "m4a" "mp3" "wav" "flac") 'voice)
+    (_ 'document)))
+
+(defun etaf-telega-attach (path)
+  "Send the file at PATH, choosing its Telegram kind by extension (C-c C-a)."
+  (interactive (list (read-file-name "附件：")))
+  (etaf-telega-send-file-as (etaf-telega--file-kind path) path))
+
+(defun etaf-telega-send-file-as (kind path)
+  "Send the file at PATH as KIND, using the composer draft as its caption.
+KIND is `photo', `video', `voice' or `document'; the draft stays until the
+message is accepted and the pending upload shows in the status line."
+  (interactive
+   (list (intern (completing-read "附件类型：" '("photo" "video" "voice" "document")
+                                  nil t))
+         (read-file-name "附件：")))
+  (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model))
+         (caption (etaf-telega-model-draft model)))
+    (unless chat (user-error "先选择一个对话"))
+    (etaf-telega--reset-input-history)
+    (etaf-telega-model-set-upload model
+                                  (list :path path
+                                        :name (file-name-nondirectory path)
+                                        :progress 0))
+    (etaf-telega-model-set-status model (format "正在上传 %s…"
+                                                (file-name-nondirectory path)))
+    (etaf-telega-backend-send-file
+     etaf-telega--backend (plist-get chat :id) kind path
+     (and caption (not (string-empty-p (string-trim caption))) caption)
+     (etaf-telega-model-send-options model))
+    (etaf-telega--reset-send-options model)
+    path))
+
+(defun etaf-telega-cancel-upload ()
+  "Cancel the file upload in progress (C-c C-u)."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (upload (etaf-telega-model-upload model)))
+    (if (null upload)
+        (user-error "没有正在上传的文件")
+      (etaf-telega-backend-cancel-upload etaf-telega--backend
+                                         (plist-get upload :path))
+      (etaf-telega-model-set-upload model nil)
+      (etaf-telega-model-set-status model "已取消上传"))))
+
+(defun etaf-telega--on-upload (model event)
+  "Show upload EVENT's progress in MODEL's status line and upload row."
+  (let ((name (or (plist-get event :name) "文件"))
+        (progress (or (plist-get event :progress) 0))
+        (upload (etaf-telega-model-upload model)))
+    (etaf-telega-model-set-upload
+     model (list :path (plist-get upload :path)
+                 :name name :progress progress))
+    (etaf-telega-model-set-status
+     model (format "正在上传 %s：%d%%" name (round (* 100 progress))))))
 
 (defun etaf-telega-compose ()
   "Start typing in the composer."

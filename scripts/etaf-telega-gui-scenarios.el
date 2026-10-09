@@ -15,6 +15,9 @@
 (defvar etaf-telega-gui--hold nil
   "When non-nil the fake backend withholds its send acknowledgement.")
 
+(defvar etaf-telega-gui--attach nil
+  "Path of the fixture file used by the attachment actions.")
+
 (defun etaf-telega-gui--responder (backend text)
   "Acknowledge TEXT for BACKEND unless the scenario holds the receipt."
   (unless etaf-telega-gui--hold
@@ -525,6 +528,30 @@ Wait briefly for a layout or menu change to finish rendering the control."
                        (equal (gethash 1 drafts) "草稿A")
                        (equal (gethash 2 drafts) "草稿B"))))
               t)
+             (etaf-telega-gui--action
+              "attach-file"
+              (lambda (_)
+                (setq etaf-telega-gui--attach
+                      (make-temp-file "etaf-telega-attach" nil ".txt"))
+                (with-temp-file etaf-telega-gui--attach (insert "attachment fixture"))
+                (etaf-telega-send-file-as 'document etaf-telega-gui--attach))
+              (lambda (_)
+                (let ((status (or (plist-get (etaf-telega-gui--info) :status) "")))
+                  (and (string-match-p "正在上传" status)
+                       (string-match-p "45%" status)
+                       (string-match-p "正在上传.*45%" (etaf-telega-gui--text)))))
+              t)
+             (etaf-telega-gui--action
+              "confirm-attachment"
+              (lambda (_)
+                (etaf-telega-backend-fake-confirm-file etaf-telega-gui--backend
+                                                       etaf-telega-gui--attach))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (equal (plist-get info :status) "就绪")
+                       (equal (plist-get info :draft) "")
+                       (string-match-p "etaf-telega-attach.*\\.txt"
+                                       (etaf-telega-gui--text))))))
              (etaf-telega-gui--action
               "chat-search-server"
               (lambda (_)
