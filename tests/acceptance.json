@@ -111,6 +111,11 @@
    "purpose": "Telega's own keys run Telega's commands on the chat or message at point."
   },
   {
+   "name": "etaf-telega-tests-chat-action-keys-run-native-commands",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "M, A and L run Telega's mute, archive and leave on the conversation under point."
+  },
+  {
    "name": "etaf-telega-tests-theme-switch-repaints-the-client",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Toggling the theme swaps the palette and keeps the open chat."

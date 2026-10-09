@@ -422,6 +422,22 @@ fake backend's send responder."
       (should (equal (car (etaf-telega-backend-fake-natives backend))
                      '(telega-msg-copy-dwim 1 12))))))
 
+(ert-deftest etaf-telega-tests-chat-action-keys-run-native-commands ()
+  "M, A and L run Telega's mute, archive and leave on the chat under point."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-test--keys "n")
+      (should (equal (etaf-telega-test--info :cursor) 2))
+      (etaf-telega-test--keys "M")
+      (should (equal (car (etaf-telega-backend-fake-natives backend))
+                     '(telega-chat-toggle-muted 2 nil)))
+      (etaf-telega-test--keys "A")
+      (should (equal (car (etaf-telega-backend-fake-natives backend))
+                     '(telega-chat-toggle-archive 2 nil)))
+      (etaf-telega-test--keys "L")
+      (should (equal (car (etaf-telega-backend-fake-natives backend))
+                     '(telega-chat-leave 2 nil))))))
+
 (ert-deftest etaf-telega-tests-theme-switch-repaints-the-client ()
   "Toggling the theme swaps the palette and keeps the open chat."
   (let ((etaf-telega-theme 'dark))

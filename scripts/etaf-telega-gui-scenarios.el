@@ -351,6 +351,21 @@ Wait briefly for a layout or menu change to finish rendering the control."
                 (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
                        '(telega-chat-toggle-pin 2 nil))))
              (etaf-telega-gui--action
+              "native-mute-key" (lambda (_) (execute-kbd-macro (kbd "M")))
+              (lambda (_)
+                (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
+                       '(telega-chat-toggle-muted 2 nil))))
+             (etaf-telega-gui--action
+              "native-archive-key" (lambda (_) (execute-kbd-macro (kbd "A")))
+              (lambda (_)
+                (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
+                       '(telega-chat-toggle-archive 2 nil))))
+             (etaf-telega-gui--action
+              "native-leave-key" (lambda (_) (execute-kbd-macro (kbd "L")))
+              (lambda (_)
+                (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
+                       '(telega-chat-leave 2 nil))))
+             (etaf-telega-gui--action
               "reopen-restores-draft"
               (lambda (_) (etaf-telega-open-chat 1))
               (lambda (_)

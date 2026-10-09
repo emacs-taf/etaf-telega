@@ -394,6 +394,8 @@ A nil CURRENT steps from past the last id."
     ("a" . telega-chat-add-member) ("o" . telega-transient-chat-operate)
     ("r" . telega-chat-toggle-read) ("d" . telega-transient-chat-delete)
     ("P" . telega-chat-toggle-pin) ("^" . telega-chat-toggle-pin)
+    ("M" . telega-chat-toggle-muted) ("A" . telega-chat-toggle-archive)
+    ("L" . telega-chat-leave)
     ("DEL" . telega-chat-delete))
   "Keys of the conversation list that run Telega's own chat commands.
 Each command operates on the conversation under point.")
