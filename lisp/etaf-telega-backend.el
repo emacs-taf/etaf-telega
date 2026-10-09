@@ -1056,7 +1056,9 @@ failure reaches the application as a clipped status line instead."
 (defun etaf-telega-backend-telega--username (user)
   "Return USER's first active username, or nil."
   (or (telega-tl-str user :username)
-      (car (plist-get (plist-get user :usernames) :active_usernames))))
+      (let ((active (plist-get (plist-get user :usernames) :active_usernames)))
+        (cond ((and (vectorp active) (> (length active) 0)) (aref active 0))
+              ((consp active) (car active))))))
 
 (defvar etaf-telega-backend-telega--chats-timer nil
   "Pending chat-list refresh; a TDLib sync storm becomes one report.")
