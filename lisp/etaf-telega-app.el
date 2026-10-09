@@ -74,6 +74,12 @@ Tests bind this to a fake backend factory so no network is touched.")
 (defvar etaf-telega--input-stash nil
   "Composer text kept while browsing the input history.")
 
+(defvar etaf-telega--submitted-text nil
+  "Composer text last handed to the backend.
+A send acknowledgement carries the message as the server parsed it, and
+Markdown loses its markup on the way, so the draft is compared against this
+copy as well before it is cleared.")
+
 (defconst etaf-telega--input-history-limit 50
   "Sent texts remembered per conversation for M-p and M-n.")
 
@@ -292,9 +298,12 @@ the newest message of the reported page, which is what a date jump wants."
                       ((error quit)
                        (etaf-telega--report-callback-failure error))))))
               (finish-compose (message)
-                (when (equal (etaf-telega-model-draft model)
-                             (plist-get message :text))
+                (when (or (equal (etaf-telega-model-draft model)
+                                 (plist-get message :text))
+                          (equal (etaf-telega-model-draft model)
+                                 etaf-telega--submitted-text))
                   (etaf-telega-model-set-draft model ""))
+                (setq etaf-telega--submitted-text nil)
                 (etaf-telega--save-draft
                  (plist-get (etaf-telega-model-chat model) :id) "")
                 (when (etaf-telega-model-upload model)
@@ -1545,6 +1554,7 @@ stays until the backend accepts it, so a failure keeps the text for retry."
     (etaf-telega--popover-close)
     (unless (string-empty-p (string-trim text))
       (etaf-telega--reset-input-history)
+      (setq etaf-telega--submitted-text text)
       (let ((options (etaf-telega-model-send-options model)))
         (pcase (plist-get compose :kind)
           ('reply (etaf-telega-backend-send etaf-telega--backend text

@@ -71,6 +71,11 @@
    "purpose": "Typing in the composer sends the text and clears it after acceptance."
   },
   {
+   "name": "etaf-telega-tests-markdown-ack-clears-the-typed-draft",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "An acknowledgement clears the draft even when its text differs from the typed markup."
+  },
+  {
    "name": "etaf-telega-tests-input-history-recalls-sent-texts",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "M-p and M-n recall the texts sent in the open conversation."

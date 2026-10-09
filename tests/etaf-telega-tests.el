@@ -225,6 +225,22 @@ fake backend's send responder."
       (let ((text (etaf-telega-test--text)))
         (should (< (string-search "在的" text) (string-search "今晚见" text)))))))
 
+(ert-deftest etaf-telega-tests-markdown-ack-clears-the-typed-draft ()
+  "An accepted send clears the typed draft when the server text differs."
+  (let ((backend (etaf-telega-test--backend
+                  (lambda (fake text)
+                    ;; Like a Markdown send: the markup is gone from the message.
+                    (etaf-telega-backend-fake-complete
+                     fake (replace-regexp-in-string "[*]" "" text))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i C-c C-m")
+      (etaf-telega-test--keys "**今晚见**")
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-backend-fake-sent backend) '("**今晚见**")))
+      (should (equal (etaf-telega-test--info :draft) ""))
+      (should (string-search "今晚见" (etaf-telega-test--text))))))
+
 (ert-deftest etaf-telega-tests-input-history-recalls-sent-texts ()
   "M-p and M-n recall the texts sent in the open conversation."
   (let ((backend (etaf-telega-test--backend
