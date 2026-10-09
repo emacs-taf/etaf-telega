@@ -370,6 +370,28 @@ A nil CURRENT steps from past the last id."
   (interactive)
   (etaf-telega--move-chat -1))
 
+(defun etaf-telega-next-unread-chat ()
+  "Move to the next conversation with unread messages (M-g u on the list)."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (chats (etaf-telega--list-chats model))
+         (ids (mapcar (lambda (chat) (plist-get chat :id)) chats))
+         (current (or (etaf-telega--row-at 'chat) (etaf-telega-model-cursor model)))
+         (start (or (cl-position current ids :test #'equal) -1))
+         (target (cl-loop for offset from 1 to (length ids)
+                          for id = (nth (mod (+ start offset) (length ids)) ids)
+                          for chat = (cl-find id chats
+                                              :key (lambda (item)
+                                                     (plist-get item :id))
+                                              :test #'equal)
+                          when (and chat
+                                    (or (> (or (plist-get chat :unread) 0) 0)
+                                        (> (or (plist-get chat :mention) 0) 0)))
+                          return id)))
+    (unless target (user-error "没有未读会话"))
+    (etaf-telega-model-set-cursor model target)
+    (etaf-telega--goto-ref (current-buffer) (etaf-telega--ref 'chat target))))
+
 (defun etaf-telega--move-message (delta)
   "Move point DELTA messages; past the newest message lands on the composer."
   (let* ((model (etaf-telega--model))
@@ -439,6 +461,58 @@ Interactively read a date like 2026-10-05 or 2026-10-05 14:30."
     (read-string "跳到日期（YYYY-MM-DD [HH:MM]）："
                  (format-time-string "%Y-%m-%d")))))
 
+(defun etaf-telega--select-next-message (candidates)
+  "Select the first CANDIDATE newer than the selected message.
+With no newer candidate, select the oldest one, so repeated presses cycle."
+  (let* ((model (etaf-telega--model))
+         (current (etaf-telega-model-selected-id model))
+         (target (or (cl-find-if (lambda (message)
+                                   (> (or (plist-get message :id) 0)
+                                      (or current 0)))
+                                 candidates)
+                     (car candidates))))
+    (etaf-telega-show-message (plist-get target :id))))
+
+(defun etaf-telega-next-unread-message ()
+  "Select the next unread message in the open conversation (M-g u)."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model))
+         (last-read (or (and chat (plist-get chat :last-read)) 0))
+         (candidates (cl-remove-if-not
+                      (lambda (message)
+                        (and (> (or (plist-get message :id) 0) last-read)
+                             (not (plist-get message :outgoing))))
+                      (etaf-telega-model-messages model))))
+    (unless candidates (user-error "没有未读消息"))
+    (etaf-telega--select-next-message candidates)))
+
+(defun etaf-telega-next-mention ()
+  "Select the next loaded message that mentions the account (M-g m)."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (username (plist-get (etaf-telega-model-me model) :username))
+         (candidates
+          (and (stringp username) (not (string-empty-p username))
+               (let ((case-fold-search t)
+                     (needle (regexp-quote (concat "@" username))))
+                 (cl-remove-if-not
+                  (lambda (message)
+                    (string-match-p needle (or (plist-get message :text) "")))
+                  (etaf-telega-model-messages model))))))
+    (unless candidates (user-error "没有提及"))
+    (etaf-telega--select-next-message candidates)))
+
+(defun etaf-telega-next-outgoing ()
+  "Select the next message sent by the account (M-g o)."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (candidates (cl-remove-if-not (lambda (message)
+                                         (plist-get message :outgoing))
+                                       (etaf-telega-model-messages model))))
+    (unless candidates (user-error "没有自己发送的消息"))
+    (etaf-telega--select-next-message candidates)))
+
 (defun etaf-telega-next-message ()
   "Move to the next message, or to the composer after the newest one."
   (interactive)
@@ -480,6 +554,12 @@ Each command operates on the message under point.")
     (define-key map (kbd (car entry)) #'etaf-telega-native))
   map)
 
+(defvar etaf-telega-root-fastnav-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "u") #'etaf-telega-next-unread-chat)
+    map)
+  "Conversation navigation under `M-g', after Telega's root fastnav keys.")
+
 (defvar etaf-telega-root-map
   (let ((map (make-sparse-keymap)))
     (etaf-telega--native-map etaf-telega-root-native-keys map)
@@ -494,6 +574,7 @@ Each command operates on the message under point.")
                     ("T" . etaf-telega-toggle-theme)
                     ("q" . bury-buffer) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
+    (define-key map (kbd "M-g") etaf-telega-root-fastnav-map)
     map)
   "Keys of the conversation list screen, after Telega's root buffer.")
 
@@ -501,7 +582,11 @@ Each command operates on the message under point.")
   (let ((map (make-sparse-keymap)))
     (dolist (pair '(("q" . etaf-telega-jump-quote)
                     ("p" . etaf-telega-jump-pinned)
-                    ("d" . etaf-telega-jump-date)))
+                    ("d" . etaf-telega-jump-date)
+                    ("u" . etaf-telega-next-unread-message)
+                    ("m" . etaf-telega-next-mention)
+                    ("@" . etaf-telega-next-mention)
+                    ("o" . etaf-telega-next-outgoing)))
       (define-key map (kbd (car pair)) (cdr pair)))
     map)
   "Message navigation under `M-g', after Telega's chat fastnav keys.")

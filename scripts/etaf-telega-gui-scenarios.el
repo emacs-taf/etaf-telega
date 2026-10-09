@@ -39,7 +39,7 @@
                      (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
                            :link (list :site "Example" :title "示例链接")
                            :reply (list :id 11 :sender "Alice" :kind 'text :text "你好"))
-                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好"))
+                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好 @fixture"))
              histories)
     (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :date "2026-10-04" :text "周报收到"))
              histories)
@@ -47,6 +47,7 @@
           (etaf-telega-backend-fake-create
            :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02"
                               :kind 'private :username "alice" :pinned t :pinned-id 13
+                              :last-read 11
                               :description "GUI 验收用的假档案")
                         (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"
                               :kind 'group)
@@ -383,12 +384,24 @@ Wait briefly for a layout or menu change to finish rendering the control."
                 (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
                        '(telega-chat-leave 2 nil))))
              (etaf-telega-gui--action
+              "next-unread-chat" (lambda (_) (execute-kbd-macro (kbd "M-g u")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 3)))
+             (etaf-telega-gui--action
               "reopen-restores-draft"
               (lambda (_) (etaf-telega-open-chat 1))
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (eq (plist-get info :screen) 'chat)
                        (equal (plist-get info :draft) "光标\n第二行缩放中")))))
+             (etaf-telega-gui--action
+              "next-unread-message" (lambda (_) (execute-kbd-macro (kbd "M-g u")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
+             (etaf-telega-gui--action
+              "next-mention" (lambda (_) (execute-kbd-macro (kbd "M-g m")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
+             (etaf-telega-gui--action
+              "next-outgoing" (lambda (_) (execute-kbd-macro (kbd "M-g o")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 12)))
              (etaf-telega-gui--action
               "app-bar-jump-newest"
               (lambda (_)

@@ -11,7 +11,7 @@
 ;; and projects every answer:
 ;;
 ;;   :status   (string)                 connection state for the header
-;;   :me       (plist)                  own account (:id :name)
+;;   :me       (plist)                  own account (:id :name :username)
 ;;   :chats    (list of chat plists)    (:id :title :preview :author :unread
 ;;                                      :pinned :muted :kind :archived :mention
 ;;                                      :online :username :time :order
@@ -153,7 +153,7 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
   (when-let* ((report (plist-get callbacks :status)))
     (funcall report "就绪"))
   (when-let* ((report (plist-get callbacks :me)))
-    (funcall report (list :id 1 :name "Fixture")))
+    (funcall report (list :id 1 :name "Fixture" :username "fixture")))
   (when-let* ((report (plist-get callbacks :chats)))
     (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
   backend)
@@ -427,6 +427,7 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega-filter-chats "telega-filter" (chat-list &optional chat-temex))
 (declare-function telega-user-get "telega-user" (user-id &optional locally-p))
 (declare-function telega-user-chat "telega-user" (user))
+(declare-function telega-user-me "telega-user" (&optional locally-p))
 (declare-function telega--createPrivateChat "telega-tdlib" (user &optional callback))
 (declare-function telega--getChatMessageByDate "telega-tdlib"
                   (chat date &optional callback))
@@ -836,7 +837,19 @@ failure reaches the application as a clipped status line instead."
   (dolist (backend etaf-telega-backend-telega-instances)
     (etaf-telega-backend-telega--guard
      backend "连接就绪"
-     (lambda () (etaf-telega-backend-telega--report backend :status "就绪" :chats t)))))
+     (lambda ()
+       (when-let* ((me (ignore-errors (telega-user-me))))
+         (etaf-telega-backend-telega--report
+          backend :me
+          (list :id (plist-get me :id)
+                :name (or (ignore-errors (telega-msg-sender-title me)) "")
+                :username (etaf-telega-backend-telega--username me))))
+       (etaf-telega-backend-telega--report backend :status "就绪" :chats t)))))
+
+(defun etaf-telega-backend-telega--username (user)
+  "Return USER's first active username, or nil."
+  (or (telega-tl-str user :username)
+      (car (plist-get (plist-get user :usernames) :active_usernames))))
 
 (defvar etaf-telega-backend-telega--chats-timer nil
   "Pending chat-list refresh; a TDLib sync storm becomes one report.")

@@ -52,6 +52,8 @@
 ;; Move point to the next conversation in the list (n).
 ;; Function: etaf-telega-previous-chat ()
 ;; Move point to the previous conversation in the list (p).
+;; Function: etaf-telega-next-unread-chat ()
+;; Move to the next conversation with unread messages (M-g u on the list).
 ;; Function: etaf-telega-open-chat (id)
 ;; Replace the list with conversation ID: its newest history page above the
 ;; composer, with point in the composer.  Interactively ID is the
@@ -102,6 +104,12 @@
 ;; Function: etaf-telega-jump-date (date)
 ;; Jump to the message nearest before DATE, a timestamp; interactively read
 ;; a date like 2026-10-05 (M-g d).
+;; Function: etaf-telega-next-unread-message ()
+;; Select the next unread message in the open conversation (M-g u).
+;; Function: etaf-telega-next-mention ()
+;; Select the next loaded message that mentions the account (M-g m).
+;; Function: etaf-telega-next-outgoing ()
+;; Select the next message sent by the account (M-g o).
 ;; Function: etaf-telega-chat-search ()
 ;; Search the open conversation's loaded messages (/ in a chat, or the chat
 ;; header's search button): a search field replaces the title and the

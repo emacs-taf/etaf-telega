@@ -358,6 +358,37 @@ fake backend's send responder."
       (etaf-telega-jump-date (float-time (date-to-time "2026-10-04 10:00")))
       (should (equal (etaf-telega-test--info :selected) 12)))))
 
+(ert-deftest etaf-telega-tests-next-unread-chat-moves-to-the-unread-one ()
+  "M-g u on the list selects the next conversation with unread messages."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (should (equal (etaf-telega-test--info :cursor) 1))
+    (etaf-telega-test--keys "M-g u")
+    (should (equal (etaf-telega-test--info :cursor) 3))
+    (etaf-telega-test--keys "M-g u")
+    (should (equal (etaf-telega-test--info :cursor) 1))))
+
+(ert-deftest etaf-telega-tests-fastnav-walks-unread-mentions-and-outgoing ()
+  "M-g u/m/o select unread, mentioning and outgoing messages."
+  (let* ((histories
+          (etaf-telega-test--histories
+           (list 1
+                 (list :id 15 :outgoing t :sender "我" :time "10:04" :text "收到")
+                 (list :id 14 :sender "Alice" :time "10:03" :text "在吗 @fixture")
+                 (list :id 13 :sender "Alice" :time "10:02" :text "新消息")
+                 (list :id 12 :sender "Alice" :time "10:01" :text "已读")
+                 (list :id 11 :outgoing t :sender "我" :time "10:00" :text "在的"))))
+         (backend (etaf-telega-test--backend nil histories)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "M-g u")
+      (should (equal (etaf-telega-test--info :selected) 12))
+      (etaf-telega-test--keys "M-g u")
+      (should (equal (etaf-telega-test--info :selected) 13))
+      (etaf-telega-test--keys "M-g m")
+      (should (equal (etaf-telega-test--info :selected) 14))
+      (etaf-telega-test--keys "M-g o")
+      (should (equal (etaf-telega-test--info :selected) 15)))))
+
 (ert-deftest etaf-telega-tests-day-separators-label-each-date ()
   "Each new date opens with a day label; today reads as 今天."
   (let ((today (format-time-string "%Y-%m-%d")))
