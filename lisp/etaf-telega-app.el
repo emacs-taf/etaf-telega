@@ -65,6 +65,18 @@ Tests bind this to a fake backend factory so no network is touched.")
 (defvar etaf-telega--jump-target nil
   "Message id a jump is loading around, or nil.")
 
+(defvar etaf-telega--input-history (make-hash-table :test #'equal)
+  "Sent texts per conversation id, newest first, for M-p and M-n.")
+
+(defvar etaf-telega--input-index nil
+  "Position while browsing the open conversation's input history.")
+
+(defvar etaf-telega--input-stash nil
+  "Composer text kept while browsing the input history.")
+
+(defconst etaf-telega--input-history-limit 50
+  "Sent texts remembered per conversation for M-p and M-n.")
+
 (defconst etaf-telega--history-retry-limit 2
   "Empty history answers retried before the history counts as complete.
 TDLib answers its first requests for a chat from the local database and may
@@ -289,6 +301,9 @@ the newest message of the reported page, which is what a date jump wants."
           :messages (report #'etaf-telega--on-messages)
           :older (report #'etaf-telega--on-older)
           :sent (report (lambda (message)
+                          (etaf-telega--remember-input
+                           (plist-get (etaf-telega-model-chat model) :id)
+                           (plist-get message :text))
                           (etaf-batch
                             (finish-compose message)
                             (etaf-telega-model-append-message model message))
@@ -646,6 +661,7 @@ Each command operates on the message under point.")
           etaf-telega--history-retries 0
           etaf-telega--jump-pending t
           etaf-telega--jump-target nil)
+    (etaf-telega--reset-input-history)
     (etaf-batch
       (when searching
         (etaf-telega-model-add-recent model id)
@@ -970,11 +986,77 @@ a swipe shows the neighbouring filter tab."
       (etaf-telega--goto-ref etaf-telega--buffer
                              (etaf-telega--ref 'message (plist-get newest :id))))))
 
+(defconst etaf-telega--composer-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "M-p") #'etaf-telega-history-previous)
+    (define-key map (kbd "M-n") #'etaf-telega-history-next)
+    map)
+  "Composer keys that recall sent texts.")
+
+(defun etaf-telega--reset-input-history ()
+  "Stop browsing the open conversation's input history."
+  (setq etaf-telega--input-index nil
+        etaf-telega--input-stash nil))
+
+(defun etaf-telega--remember-input (chat-id text)
+  "Remember TEXT as CHAT-ID's latest sent text, newest first."
+  (when (and chat-id (stringp text) (not (string-empty-p text)))
+    (let ((texts (cons text (remove text (gethash chat-id etaf-telega--input-history)))))
+      (puthash chat-id
+               (if (> (length texts) etaf-telega--input-history-limit)
+                   (cl-subseq texts 0 etaf-telega--input-history-limit)
+                 texts)
+               etaf-telega--input-history))))
+
+(defun etaf-telega--set-composer (text)
+  "Show TEXT in the composer, keeping it editable."
+  (let ((runtime (etaf-telega--runtime etaf-telega--buffer)))
+    (when (etaf-text-input-active-p runtime)
+      (etaf-text-input-end 'blur))
+    (etaf-telega-model-set-draft (etaf-telega--model) text)
+    (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer)
+    (etaf-text-input-begin runtime 'telega-composer)))
+
+(defun etaf-telega--history-step (delta)
+  "Replace the composer text with the sent text DELTA positions away."
+  (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model))
+         (texts (and chat (gethash (plist-get chat :id) etaf-telega--input-history))))
+    (unless texts (user-error "没有输入历史"))
+    (cond
+     ((null etaf-telega--input-index)
+      (when (> delta 0)
+        (setq etaf-telega--input-stash (etaf-telega-model-draft model)
+              etaf-telega--input-index 0)
+        (etaf-telega--set-composer (car texts))))
+     (t
+      (let ((index (+ etaf-telega--input-index delta)))
+        (cond
+         ((< index 0)
+          (setq etaf-telega--input-index nil)
+          (etaf-telega--set-composer (or etaf-telega--input-stash "")))
+         ((>= index (length texts))
+          (etaf-telega--set-composer (nth (1- (length texts)) texts)))
+         (t
+          (setq etaf-telega--input-index index)
+          (etaf-telega--set-composer (nth index texts)))))))))
+
+(defun etaf-telega-history-previous ()
+  "Replace the composer text with the previous sent text (M-p)."
+  (interactive)
+  (etaf-telega--history-step 1))
+
+(defun etaf-telega-history-next ()
+  "Replace the composer text with the next sent text (M-n)."
+  (interactive)
+  (etaf-telega--history-step -1))
+
 (defun etaf-telega-compose ()
   "Start typing in the composer."
   (interactive)
   (unless (etaf-telega-model-chat (etaf-telega--model))
     (user-error "先选择一个对话"))
+  (etaf-telega--reset-input-history)
   (let ((runtime (etaf-telega--runtime etaf-telega--buffer)))
     (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer)
     (etaf-text-input-begin runtime 'telega-composer)))
@@ -1030,6 +1112,7 @@ stays until the backend accepts it, so a failure keeps the text for retry."
     (unless (etaf-telega-model-chat model)
       (user-error "先选择一个对话"))
     (unless (string-empty-p (string-trim text))
+      (etaf-telega--reset-input-history)
       (pcase (plist-get compose :kind)
         ('reply (etaf-telega-backend-send etaf-telega--backend text
                                           (plist-get compose :target)))
@@ -1041,6 +1124,7 @@ stays until the backend accepts it, so a failure keeps the text for retry."
   "Keep TEXT as the draft after leaving the composer.
 Leaving an edit restores the draft captured before editing."
   (when etaf-telega--model
+    (etaf-telega--reset-input-history)
     (let ((compose (etaf-telega-model-compose etaf-telega--model)))
       (etaf-batch
         (etaf-telega-model-set-draft

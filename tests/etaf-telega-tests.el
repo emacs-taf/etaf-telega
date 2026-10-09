@@ -212,6 +212,25 @@ fake backend's send responder."
       (let ((text (etaf-telega-test--text)))
         (should (< (string-search "在的" text) (string-search "今晚见" text)))))))
 
+(ert-deftest etaf-telega-tests-input-history-recalls-sent-texts ()
+  "M-p and M-n recall the texts sent in the open conversation."
+  (let ((backend (etaf-telega-test--backend
+                  (lambda (fake text) (etaf-telega-backend-fake-complete fake text)))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 第一条 RET")
+      (etaf-telega-test--keys "i 第二条 RET")
+      (should (equal (etaf-telega-test--info :draft) ""))
+      (etaf-telega-test--keys "i")
+      (etaf-telega-test--keys "M-p")
+      (should (equal (etaf-telega-test--info :draft) "第二条"))
+      (etaf-telega-test--keys "M-p")
+      (should (equal (etaf-telega-test--info :draft) "第一条"))
+      (etaf-telega-test--keys "M-n")
+      (should (equal (etaf-telega-test--info :draft) "第二条"))
+      (etaf-telega-test--keys "M-n")
+      (should (equal (etaf-telega-test--info :draft) "")))))
+
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
   "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))

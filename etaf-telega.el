@@ -142,6 +142,10 @@
 ;; Function: etaf-telega-compose ()
 ;; Move point into the composer and begin editing it (i).  Return submits;
 ;; C-c C-k leaves it and keeps the text as the conversation's draft.
+;; Function: etaf-telega-history-previous ()
+;; Replace the composer text with the previous sent text (M-p).
+;; Function: etaf-telega-history-next ()
+;; Replace the composer text with the next sent text (M-n).
 ;; Function: etaf-telega-reply ()
 ;; Arm a reply to the message under point; the next send quotes it (r).
 ;; Function: etaf-telega-edit ()

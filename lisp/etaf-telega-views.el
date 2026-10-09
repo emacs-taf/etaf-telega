@@ -44,6 +44,7 @@
 (declare-function etaf-telega--search-focused "etaf-telega-app" ())
 (declare-function etaf-telega--search-submit "etaf-telega-app" (query))
 (declare-function etaf-telega--search-cancelled "etaf-telega-app" (query))
+(defvar etaf-telega--composer-keymap)
 (declare-function etaf-telega--search-kind-select "etaf-telega-app" (kind))
 (declare-function etaf-telega-chat-search "etaf-telega-app" ())
 (declare-function etaf-telega-chat-search-exit "etaf-telega-app" ())
@@ -1080,6 +1081,7 @@ until the reader scrolls away; reaching its top asks for older messages."
             :label "消息" :hide-label t :rows 1 :width 'stretch :variant 'plain
             :placeholder "写消息…  (i 输入 · RET 发送 · S-RET 换行)"
             :submit-on-return t
+            :keymap etaf-telega--composer-keymap
             :on-submit #'etaf-telega-send
             :on-cancel #'etaf-telega--keep-draft))
          (etaf-ui-icon :name 'send :color (etaf-telega-color :accent)

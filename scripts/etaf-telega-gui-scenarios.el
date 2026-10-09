@@ -394,6 +394,23 @@ Wait briefly for a layout or menu change to finish rendering the control."
                   (and (eq (plist-get info :screen) 'chat)
                        (equal (plist-get info :draft) "光标\n第二行缩放中")))))
              (etaf-telega-gui--action
+              "history-previous"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (execute-kbd-macro (kbd "M-p")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :editing) t)
+                     (equal (plist-get (etaf-telega-gui--info) :draft) "未发送的草稿"))))
+             (etaf-telega-gui--action
+              "history-next"
+              (lambda (_)
+                (execute-kbd-macro (kbd "M-n"))
+                (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (not (plist-get info :editing))
+                       (equal (plist-get info :draft) "光标\n第二行缩放中")))))
+             (etaf-telega-gui--action
               "next-unread-message" (lambda (_) (execute-kbd-macro (kbd "M-g u")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action

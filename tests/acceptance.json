@@ -66,6 +66,11 @@
    "purpose": "Typing in the composer sends the text and clears it after acceptance."
   },
   {
+   "name": "etaf-telega-tests-input-history-recalls-sent-texts",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "M-p and M-n recall the texts sent in the open conversation."
+  },
+  {
    "name": "etaf-telega-tests-draft-survives-until-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "A pending send keeps the draft and clears only after acceptance."
