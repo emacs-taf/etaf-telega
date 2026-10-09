@@ -716,13 +716,28 @@ private chat is not loaded yet is created and opened once the refreshed
 list carries it."
   (interactive
    (let* ((candidates (etaf-telega-backend-chat-candidates etaf-telega--backend))
-          (choices (mapcar (lambda (item)
-                             (cons (etaf-telega--plain-text
-                                    (or (plist-get item :title) "?"))
-                                   (plist-get item :id)))
-                           candidates)))
-     (unless choices (user-error "没有可用的会话"))
-     (list (cdr (assoc-string (completing-read "会话：" choices nil t) choices)))))
+          (counts (let ((table (make-hash-table :test #'equal)))
+                    (dolist (item candidates)
+                      (let ((name (etaf-telega--plain-text (or (plist-get item :title) "?"))))
+                        (puthash name (1+ (gethash name table 0)) table)))
+                    table))
+          (names (mapcar (lambda (item)
+                           (let ((name (etaf-telega--plain-text
+                                        (or (plist-get item :title) "?"))))
+                             (if (> (gethash name counts) 1)
+                                 (format "%s (%s)" name
+                                         (pcase (plist-get item :kind)
+                                           ('group "群组") ('channel "频道")
+                                           (_ "私聊")))
+                               name)))
+                         candidates)))
+     (unless names (user-error "没有可用的会话"))
+     ;; A plain string list keeps the command usable in completion setups that
+     ;; choke on an alist collection.
+     (let ((choice (completing-read "会话：" names nil t)))
+       (list (plist-get (nth (cl-position choice names :test #'equal)
+                             candidates)
+                        :id)))))
   (unless (etaf-telega-model-chat-by-id (etaf-telega--model) id)
     (etaf-telega-backend-ensure-chat etaf-telega--backend id)
     (etaf-telega--await-chat id))

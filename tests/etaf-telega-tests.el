@@ -148,6 +148,19 @@ fake backend's send responder."
       (should (equal (etaf-telega-test--info :chat) 3))
       (should (string-search "每日新闻" (etaf-telega-test--text))))))
 
+(ert-deftest etaf-telega-tests-chat-with-offers-names-and-resolves-the-pick ()
+  "The interactive chat-with prompt offers names and opens the pick."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (prompt collection &rest _)
+                 (should (equal prompt "会话："))
+                 (should (equal collection '("Alice" "工作群" "每日新闻")))
+                 "工作群")))
+      (call-interactively #'etaf-telega-chat-with))
+    (should (eq (etaf-telega-test--info :screen) 'chat))
+    (should (equal (etaf-telega-test--info :chat) 2))
+    (should (string-search "工作群" (etaf-telega-test--text)))))
+
 (ert-deftest etaf-telega-tests-open-chat-shows-history-and-lands-on-composer ()
   "Opening a chat replaces the list with its history, oldest first."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
