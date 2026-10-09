@@ -15,7 +15,8 @@
 ;;   :chats    (list of chat plists)    (:id :title :preview :author :unread
 ;;                                      :pinned :muted :kind :archived :mention
 ;;                                      :online :username :time :order
-;;                                      :photo :members), main list then
+;;                                      :photo :members :last-read :pinned-id),
+;;                                      main list then
 ;;                                      archive, each in the server's order
 ;;   :messages (list of message plists) the chat's newest page, newest first
 ;;   :older    (list of message plists) an older page, newest first
@@ -32,7 +33,7 @@
 ;; Message plists carry (:id :outgoing :sender :time :date :edited :kind
 ;; :file :link :media :avatar :reply :reactions :duration :views :text);
 ;; :views is a channel post's view count or nil, :reply is
-;; (:sender :kind :text) of the quoted message, :reactions a list of
+;; (:id :sender :kind :text) of the quoted message, :reactions a list of
 ;; (:key :label :count :chosen) in server order and :duration the length in
 ;; seconds of video, animation, voice and audio.  A chat's :photo, a message's sender :avatar and its
 ;; :media :src are image sources:
@@ -475,6 +476,9 @@ A missing file starts downloading once; ON-READY runs when it is local."
           :archived (equal (plist-get (plist-get position :list) :@type)
                            "chatListArchive")
           :mention (or (plist-get chat :unread_mention_count) 0)
+          :last-read (or (plist-get chat :last_read_inbox_message_id) 0)
+          :pinned-id (let ((id (plist-get chat :pinned_message_id)))
+                       (and (natnump id) (> id 0) id))
           :online (and (ignore-errors
                         (telega-user-online-p (telega-chat--info-locally chat)))
                        t)
@@ -557,7 +561,8 @@ The raw message stays available to Telega's own commands run through
                                            :view_count))))
                    (and (numberp count) (> count 0) count))
           :reply (and quoted
-                      (list :sender (etaf-telega-backend-telega--sender quoted)
+                      (list :id (plist-get quoted :id)
+                            :sender (etaf-telega-backend-telega--sender quoted)
                             :kind (etaf-telega-backend-telega--message-kind quoted)
                             :text (or (ignore-errors
                                         (telega-msg-content-text quoted))
