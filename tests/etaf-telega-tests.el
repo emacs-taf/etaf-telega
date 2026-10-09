@@ -267,6 +267,24 @@ fake backend's send responder."
     (should (equal (etaf-telega-test--info :draft) ""))
     (should-not (etaf-telega-test--info :editing))))
 
+(ert-deftest etaf-telega-tests-drafts-persist-per-conversation ()
+  "Leaving a composer saves its draft and reopening restores it."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 给Alice的草稿")
+      (etaf-telega-test--keys "C-c C-k")
+      (should (equal (gethash 1 (etaf-telega-backend-fake-drafts backend))
+                     "给Alice的草稿"))
+      (etaf-telega-open-chat 2)
+      (should (equal (etaf-telega-test--info :draft) ""))
+      (etaf-telega-test--keys "i 群草稿")
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-open-chat 1)
+      (should (equal (etaf-telega-test--info :draft) "给Alice的草稿"))
+      (etaf-telega-open-chat 2)
+      (should (equal (etaf-telega-test--info :draft) "群草稿")))))
+
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
   "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))

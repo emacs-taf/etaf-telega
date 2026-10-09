@@ -219,6 +219,8 @@
 ;; Function: etaf-telega-backend-date-message (backend date)
 ;; Load the message at DATE, a `float-time'; it arrives through the `:jump'
 ;; callback.
+;; Function: etaf-telega-backend-save-draft (backend chat-id text)
+;; Store TEXT as CHAT-ID's draft; an empty TEXT clears it.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
 ;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.
@@ -253,6 +255,9 @@
 ;; Function: etaf-telega-backend-fake-sends (backend)
 ;; Return, newest first, BACKEND's recorded sends as (:text :reply :options)
 ;; plists.
+;; Function: etaf-telega-backend-fake-drafts (backend)
+;; Return BACKEND's stored draft texts, a hash table from conversation id to
+;; text.
 ;; Function: etaf-telega-backend-fake-replies (backend)
 ;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
 ;; Function: etaf-telega-backend-fake-natives (backend)

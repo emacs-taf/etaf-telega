@@ -292,6 +292,8 @@ the newest message of the reported page, which is what a date jump wants."
                 (when (equal (etaf-telega-model-draft model)
                              (plist-get message :text))
                   (etaf-telega-model-set-draft model ""))
+                (etaf-telega--save-draft
+                 (plist-get (etaf-telega-model-chat model) :id) "")
                 (etaf-telega-model-set-compose model nil)))
     (list :status (report (lambda (status)
                             (etaf-telega-model-set-status
@@ -673,7 +675,9 @@ Each command operates on the message under point.")
         (etaf-telega-model-set-search model nil))
       (unless (equal (plist-get previous :id) id)
         (etaf-telega-model-set-chat-search model nil)
-        (etaf-telega-model-set-draft model ""))
+        (etaf-telega--save-draft (plist-get previous :id)
+                                 (etaf-telega-model-draft model))
+        (etaf-telega-model-set-draft model (or (plist-get chat :draft) "")))
       (etaf-telega-model-select model chat)
       (etaf-telega-model-set-cursor model id)
       (etaf-telega--show-screen 'chat))
@@ -1018,6 +1022,17 @@ a swipe shows the neighbouring filter tab."
                  texts)
                etaf-telega--input-history))))
 
+(defun etaf-telega--save-draft (chat-id text)
+  "Store TEXT as CHAT-ID's draft through the backend."
+  (when chat-id
+    (etaf-telega-backend-save-draft etaf-telega--backend chat-id text)))
+
+(defun etaf-telega--save-current-draft ()
+  "Store the open conversation's current draft through the backend."
+  (when etaf-telega--model
+    (etaf-telega--save-draft (plist-get (etaf-telega-model-chat etaf-telega--model) :id)
+                             (etaf-telega-model-draft etaf-telega--model))))
+
 (defun etaf-telega--set-composer (text)
   "Show TEXT in the composer, keeping it editable."
   (let ((runtime (etaf-telega--runtime etaf-telega--buffer)))
@@ -1069,7 +1084,8 @@ a swipe shows the neighbouring filter tab."
     (when (etaf-text-input-active-p runtime)
       (etaf-text-input-end 'blur))
     (etaf-telega--reset-input-history)
-    (etaf-telega-model-set-draft model "")))
+    (etaf-telega-model-set-draft model "")
+    (etaf-telega--save-current-draft)))
 
 (defun etaf-telega--toggle-send-option (key)
   "Toggle the send option KEY for the next message."
@@ -1170,7 +1186,8 @@ An edit restores the draft that was present before editing began."
       (etaf-batch
         (when (eq (plist-get compose :kind) 'edit)
           (etaf-telega-model-set-draft model (or (plist-get compose :draft) "")))
-        (etaf-telega-model-set-compose model nil)))))
+        (etaf-telega-model-set-compose model nil))
+      (etaf-telega--save-current-draft))))
 
 (defun etaf-telega-send (text)
   "Send TEXT to the open chat, honouring the compose state.
@@ -1210,7 +1227,8 @@ Leaving an edit restores the draft captured before editing."
          (if (eq (plist-get compose :kind) 'edit)
              (or (plist-get compose :draft) "")
            text))
-        (etaf-telega-model-set-compose etaf-telega--model nil)))))
+        (etaf-telega-model-set-compose etaf-telega--model nil))
+      (etaf-telega--save-current-draft))))
 
 (defun etaf-telega-reload-chat ()
   "Reload the open chat's newest history page."
@@ -1228,6 +1246,7 @@ Leaving an edit restores the draft captured before editing."
   (let ((model (etaf-telega--model)))
     (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
       (etaf-text-input-end t))
+    (etaf-telega--save-current-draft)
     (etaf-telega--show-screen 'root)
     (or (and (etaf-telega-model-cursor model)
              (etaf-telega--goto-ref etaf-telega--buffer

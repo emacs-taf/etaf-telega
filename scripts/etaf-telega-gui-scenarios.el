@@ -467,6 +467,23 @@ Wait briefly for a layout or menu change to finish rendering the control."
                        (equal (plist-get (etaf-telega-gui--info) :draft) "")
                        (not (string-match-p "静默" (etaf-telega-gui--text)))))))
              (etaf-telega-gui--action
+              "drafts-persist"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "草稿A")
+                (execute-kbd-macro (kbd "C-c C-k"))
+                (etaf-telega-open-chat 2)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "草稿B")
+                (execute-kbd-macro (kbd "C-c C-k"))
+                (etaf-telega-open-chat 1))
+              (lambda (_)
+                (let ((drafts (etaf-telega-backend-fake-drafts etaf-telega-gui--backend)))
+                  (and (equal (plist-get (etaf-telega-gui--info) :draft) "草稿A")
+                       (equal (gethash 1 drafts) "草稿A")
+                       (equal (gethash 2 drafts) "草稿B"))))
+              t)
+             (etaf-telega-gui--action
               "chat-with-name"
               (lambda (_)
                 (cl-letf (((symbol-function 'completing-read)

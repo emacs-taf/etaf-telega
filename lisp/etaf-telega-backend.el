@@ -55,6 +55,8 @@
 ;;                                        newest first; arrives as `:jump'
 ;;   (date-message BACKEND DATE)          load the message at DATE (a
 ;;                                        `float-time'); arrives as `:jump'
+;;   (save-draft BACKEND CHAT-ID TEXT)    store a conversation's draft;
+;;                                        empty TEXT clears it
 ;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
 ;;                                        replying, with send options
 ;;                                        (:silent :no-preview :at :markdown)
@@ -102,6 +104,9 @@ The page arrives through the `:jump' callback, newest first.")
   "Load the message at DATE, a `float-time', in BACKEND's selected chat.
 The message arrives through the `:jump' callback.")
 
+(cl-defgeneric etaf-telega-backend-save-draft (backend chat-id text)
+  "Store TEXT as CHAT-ID's draft through BACKEND; an empty TEXT clears it.")
+
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
 OPTIONS is a plist: `:silent' sends without a notification, `:no-preview'
@@ -141,7 +146,7 @@ with a private-chat model, such as Telega, creates the missing chat.")
 
 (cl-defstruct etaf-telega-backend-fake
   chats histories sent responder callbacks chat-id replies next-sent-id natives
-  sends)
+  sends drafts)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -150,7 +155,7 @@ RESPONDER is non-nil it is called with (BACKEND TEXT) after each send, so a
 test can acknowledge the message through `etaf-telega-backend-fake-complete'."
   (make-etaf-telega-backend-fake
    :chats chats :histories (or histories (make-hash-table :test #'equal))
-   :responder responder :sent nil))
+   :responder responder :sent nil :drafts (make-hash-table :test #'equal)))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-fake)
                                          callbacks)
@@ -278,6 +283,21 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                                    :edited)))
       (funcall report (copy-tree updated)))
     text))
+
+(cl-defmethod etaf-telega-backend-save-draft ((backend etaf-telega-backend-fake)
+                                              chat-id text)
+  "Record TEXT as CHAT-ID's draft and store it in the conversation."
+  (puthash chat-id text (etaf-telega-backend-fake-drafts backend))
+  (setf (etaf-telega-backend-fake-chats backend)
+        (cl-mapcar (lambda (chat)
+                     (if (equal (plist-get chat :id) chat-id)
+                         (plist-put (copy-tree chat) :draft text)
+                       chat))
+                   (etaf-telega-backend-fake-chats backend)))
+  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                 :chats)))
+    (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
+  text)
 
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
@@ -440,6 +460,8 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega-markup-markdown2-fmt "telega-util" (str-or-fmt-txt))
 (declare-function telega--getChatMessageByDate "telega-tdlib"
                   (chat date &optional callback))
+(declare-function telega--setChatDraftMessage "telega-tdlib"
+                  (chat &optional draft-msg))
 (defvar telega-chat-completing-sort-criteria)
 (defvar telega--info)
 (defvar telega--chats)
@@ -516,6 +538,12 @@ A missing file starts downloading once; ON-READY runs when it is local."
       (and position (not (equal (plist-get position :order) "0"))
            position))))
 
+(defun etaf-telega-backend-telega--draft-text (chat)
+  "Return CHAT's text draft, or \"\"."
+  (let* ((content (plist-get (plist-get chat :draft_message) :content))
+         (text (and content (plist-get content :text))))
+    (or (and text (telega-tl-str text :text)) "")))
+
 (defun etaf-telega-backend-telega--project-chat (chat &optional position)
   "Return CHAT's projection plist at chat list POSITION."
   (let* ((last (plist-get chat :last_message))
@@ -536,6 +564,7 @@ A missing file starts downloading once; ON-READY runs when it is local."
           :archived (equal (plist-get (plist-get position :list) :@type)
                            "chatListArchive")
           :mention (or (plist-get chat :unread_mention_count) 0)
+          :draft (etaf-telega-backend-telega--draft-text chat)
           :last-read (or (plist-get chat :last_read_inbox_message_id) 0)
           :pinned-id (let ((id (plist-get chat :pinned_message_id)))
                        (and (natnump id) (> id 0) id))
@@ -954,6 +983,17 @@ draft normally; the failure only reaches the status line."
   (or (telega-chat-get id 'offline)
       (when-let* ((user (telega-user-get id)))
         (telega--createPrivateChat user))))
+
+(cl-defmethod etaf-telega-backend-save-draft ((_backend etaf-telega-backend-telega)
+                                              chat-id text)
+  "Store TEXT as CHAT-ID's draft through Telega; empty TEXT clears it."
+  (when-let* ((chat (telega-chat-get chat-id)))
+    (if (string-empty-p text)
+        (telega--setChatDraftMessage chat)
+      (telega--setChatDraftMessage
+       chat (list :@type "draftMessage"
+                  :content (list :@type "draftMessageContentText"
+                                 :text (list :@type "formattedText" :text text)))))))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)

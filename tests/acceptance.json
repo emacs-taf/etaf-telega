@@ -81,6 +81,11 @@
    "purpose": "C-c C-d clears a draft and leaves the composer."
   },
   {
+   "name": "etaf-telega-tests-drafts-persist-per-conversation",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Leaving a composer saves its draft and reopening restores it."
+  },
+  {
    "name": "etaf-telega-tests-draft-survives-until-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "A pending send keeps the draft and clears only after acceptance."
