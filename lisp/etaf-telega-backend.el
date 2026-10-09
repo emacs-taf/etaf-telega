@@ -66,6 +66,9 @@
 ;;                                        as photo, video, voice or
 ;;                                        document
 ;;   (cancel-upload BACKEND PATH)         cancel a pending file upload
+;;   (search-members BACKEND CHAT-ID QUERY CALLBACK)  chat members by name
+;;   (search-stickers BACKEND QUERY CALLBACK)  stickers by emoji or keyword
+;;   (send-sticker BACKEND CHAT-ID STICKER)  send a picked sticker
 ;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
 ;;                                        replying, with send options
 ;;                                        (:silent :no-preview :at :markdown)
@@ -137,6 +140,18 @@ through `:sent'.")
 (cl-defgeneric etaf-telega-backend-cancel-upload (backend path)
   "Cancel BACKEND's pending upload of the file at PATH.")
 
+(cl-defgeneric etaf-telega-backend-search-members (backend chat-id query callback)
+  "Search CHAT-ID's members by QUERY through BACKEND.
+CALLBACK receives member plists with `:id', `:name' and `:username'.")
+
+(cl-defgeneric etaf-telega-backend-search-stickers (backend query callback)
+  "Search stickers matching QUERY through BACKEND.
+CALLBACK receives sticker plists with `:id', `:emoji', `:label', `:file-id',
+`:thumb-id', `:thumb-width', `:thumb-height', `:width' and `:height'.")
+
+(cl-defgeneric etaf-telega-backend-send-sticker (backend chat-id sticker)
+  "Send STICKER, a picker item, to CHAT-ID through BACKEND.")
+
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
 OPTIONS is a plist: `:silent' sends without a notification, `:no-preview'
@@ -176,19 +191,21 @@ with a private-chat model, such as Telega, creates the missing chat.")
 
 (cl-defstruct etaf-telega-backend-fake
   chats histories sent responder callbacks chat-id replies next-sent-id natives
-  sends drafts dormant files)
+  sends drafts dormant files members stickers)
 
-(cl-defun etaf-telega-backend-fake-create (&key chats histories responder dormant)
+(cl-defun etaf-telega-backend-fake-create (&key chats histories responder dormant
+                                                members stickers)
   "Create a fake backend seeded with CHATS and HISTORIES.
 HISTORIES is a hash table from chat id to a list of message plists.  When
 RESPONDER is non-nil it is called with (BACKEND TEXT) after each send, so a
 test can acknowledge the message through `etaf-telega-backend-fake-complete'.
 DORMANT holds conversations the initial list does not carry; searching finds
-them like a server-side search does."
+them like a server-side search does.  MEMBERS and STICKERS seed the composer
+popovers' completion sources."
   (make-etaf-telega-backend-fake
    :chats chats :histories (or histories (make-hash-table :test #'equal))
    :responder responder :sent nil :drafts (make-hash-table :test #'equal)
-   :dormant dormant))
+   :dormant dormant :members members :stickers stickers))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-fake)
                                          callbacks)
@@ -404,6 +421,38 @@ The message id follows the stored history, like
     (plist-put record :cancelled t))
   path)
 
+(cl-defmethod etaf-telega-backend-search-members ((backend etaf-telega-backend-fake)
+                                                  _chat-id query callback)
+  "Report BACKEND's fixture members whose name or username matches QUERY."
+  (let ((needle (downcase (string-trim (or query "")))))
+    (funcall callback
+             (cl-remove-if-not
+              (lambda (member)
+                (or (string-empty-p needle)
+                    (string-prefix-p needle (downcase (or (plist-get member :name) "")))
+                    (string-prefix-p needle
+                                     (downcase (or (plist-get member :username) "")))))
+              (copy-tree (etaf-telega-backend-fake-members backend))))))
+
+(cl-defmethod etaf-telega-backend-search-stickers ((backend etaf-telega-backend-fake)
+                                                   query callback)
+  "Report BACKEND's fixture stickers matching QUERY by emoji or label."
+  (let ((needle (downcase (string-trim (or query "")))))
+    (funcall callback
+             (cl-remove-if-not
+              (lambda (sticker)
+                (or (string-empty-p needle)
+                    (string-search needle (downcase (or (plist-get sticker :emoji) "")))
+                    (string-search needle (downcase (or (plist-get sticker :label) "")))))
+              (copy-tree (etaf-telega-backend-fake-stickers backend))))))
+
+(cl-defmethod etaf-telega-backend-send-sticker ((backend etaf-telega-backend-fake)
+                                                _chat-id sticker)
+  "Record the sticker send for STICKER's id."
+  (push (list :kind 'sticker :path (plist-get sticker :id))
+        (etaf-telega-backend-fake-files backend))
+  (plist-get sticker :id))
+
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
 
@@ -570,6 +619,12 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega--deleteMessages "telega-tdlib" (messages &optional revoke))
 (declare-function telega--on-updateFile "telega-tdlib-events" (event))
 (declare-function telega-file--uploading-progress "telega-core" (file))
+(declare-function telega--searchChatMembers "telega-tdlib"
+                  (chat query &optional members-filter &rest args))
+(declare-function telega--searchStickers "telega-tdlib"
+                  (emojis &rest args))
+(declare-function telega--tl-get "telega-core" (obj &rest keys))
+(declare-function telega-sticker-emoji "telega-sticker" (sticker &optional no-props))
 (declare-function telega--searchChatsOnServer "telega-tdlib"
                   (query &optional limit callback))
 (declare-function telega--searchChatMessages "telega-tdlib"
@@ -1570,6 +1625,94 @@ Telega's commands resolve their target through `telega-chat-at' and
               (when (and (numberp progress) report)
                 (funcall report (list :name (plist-get upload :name)
                                       :progress progress))))))))))
+
+(defun etaf-telega-backend-telega--member (user)
+  "Return USER's projection for the composer's mention picker."
+  (list :id (plist-get user :id)
+        :name (or (ignore-errors (telega-msg-sender-title user)) "")
+        :username (or (telega-tl-str user :username) "")))
+
+(defun etaf-telega-backend-telega--sticker (sticker)
+  "Return STICKER's projection for the composer's sticker picker."
+  (let* ((thumb (plist-get sticker :thumbnail))
+         (emoji (or (ignore-errors (telega-sticker-emoji sticker)) "")))
+    (list :id (plist-get sticker :id)
+          :emoji emoji
+          :label (if (string-empty-p emoji) "贴纸" emoji)
+          :file-id (ignore-errors (telega--tl-get sticker :sticker :id))
+          :thumb-id (ignore-errors (telega--tl-get thumb :photo :id))
+          :thumb-width (or (plist-get thumb :width) 0)
+          :thumb-height (or (plist-get thumb :height) 0)
+          :width (or (plist-get sticker :width) 0)
+          :height (or (plist-get sticker :height) 0))))
+
+(cl-defmethod etaf-telega-backend-search-members ((backend etaf-telega-backend-telega)
+                                                  chat-id query callback)
+  "Report Telega's members of CHAT-ID matching QUERY."
+  (let ((chat (and chat-id (telega-chat-get chat-id))))
+    (when chat
+      (telega--searchChatMembers
+       chat (or query "") nil
+       :limit 20
+       :callback
+       (lambda (members)
+         (etaf-telega-backend-telega--guard
+          backend "搜索成员"
+          (lambda ()
+            (funcall callback
+                     (mapcar #'etaf-telega-backend-telega--member
+                             (delq nil (append members nil)))))))))))
+
+(cl-defmethod etaf-telega-backend-search-stickers ((backend etaf-telega-backend-telega)
+                                                   query callback)
+  "Report Telega's stickers matching QUERY."
+  (telega--searchStickers
+   (or query "") :limit 20
+   :callback
+   (lambda (stickers)
+     (etaf-telega-backend-telega--guard
+      backend "搜索贴纸"
+      (lambda ()
+        (funcall callback
+                 (mapcar #'etaf-telega-backend-telega--sticker
+                         (delq nil (append stickers nil)))))))))
+
+(cl-defmethod etaf-telega-backend-send-sticker ((backend etaf-telega-backend-telega)
+                                                chat-id sticker)
+  "Send STICKER to CHAT-ID through Telega."
+  (let ((chat (and chat-id (telega-chat-get chat-id)))
+        (callbacks (etaf-telega-backend-telega-callbacks backend)))
+    (unless chat (error "没有选中的对话"))
+    (condition-case err
+        (telega--sendMessage
+         chat
+         (list :@type "inputMessageSticker"
+               :sticker (append
+                         (list :@type "inputSticker"
+                               :sticker (list :@type "inputFileId"
+                                              :id (plist-get sticker :file-id))
+                               :width (or (plist-get sticker :width) 0)
+                               :height (or (plist-get sticker :height) 0))
+                         (when (plist-get sticker :thumb-id)
+                           (list :thumbnail
+                                 (list :@type "inputThumbnail"
+                                       :width (or (plist-get sticker :thumb-width) 0)
+                                       :height (or (plist-get sticker :thumb-height) 0)
+                                       :thumbnail (list :@type "inputFileId"
+                                                        :id (plist-get sticker :thumb-id))))))
+               :emoji (or (plist-get sticker :emoji) ""))
+         nil nil
+         :callback
+         (lambda (message)
+           (etaf-telega-backend-telega--guard
+            backend "发送贴纸"
+            (lambda ()
+              (when-let* ((report (plist-get callbacks :sent)))
+                (funcall report
+                         (etaf-telega-backend-telega--project-message backend message)))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))
+    (plist-get sticker :id)))
 
 (cl-defmethod etaf-telega-backend-stop ((backend etaf-telega-backend-telega))
   "Stop observing Telega without closing its server or account."

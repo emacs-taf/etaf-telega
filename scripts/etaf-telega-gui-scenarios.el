@@ -80,6 +80,11 @@
                               :kind 'channel))
            :dormant (list (list :id 4 :title "远端频道" :unread 0 :preview "订阅消息"
                                 :kind 'channel :time "08:00"))
+           :members (list (list :id 2 :name "Alice" :username "alice")
+                          (list :id 5 :name "Bob" :username "bob"))
+           :stickers (list (list :id 7 :emoji "🎉" :label "派对"
+                                 :file-id 71 :thumb-id 72
+                                 :width 512 :height 512))
            :histories histories :responder #'etaf-telega-gui--responder))))
 
 (defun etaf-telega-gui--main ()
@@ -528,6 +533,50 @@ Wait briefly for a layout or menu change to finish rendering the control."
                        (equal (gethash 1 drafts) "草稿A")
                        (equal (gethash 2 drafts) "草稿B"))))
               t)
+             (etaf-telega-gui--action
+              "compose-mention"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i C-c C-d i @al")))
+              (lambda (_)
+                (and (string-match-p "@alice" (etaf-telega-gui--text))
+                     (equal (plist-get (etaf-telega-gui--info) :draft) "@al")))
+              t)
+             (etaf-telega-gui--action
+              "compose-mention-insert"
+              (lambda (_)
+                (execute-kbd-macro (kbd "RET"))
+                (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (equal (plist-get (etaf-telega-gui--info) :draft) "@alice "))
+              t)
+             (etaf-telega-gui--action
+              "compose-emoji"
+              (lambda (_)
+                (execute-kbd-macro (kbd "i C-c C-e")))
+              (lambda (_)
+                (and (string-match-p "👍" (etaf-telega-gui--text))
+                     (string-match-p "表情" (etaf-telega-gui--text))))
+              t)
+             (etaf-telega-gui--action
+              "compose-emoji-insert"
+              (lambda (_)
+                (execute-kbd-macro (kbd "RET"))
+                (execute-kbd-macro (kbd "C-c C-k")))
+              (lambda (_)
+                (string-match-p "👍" (or (plist-get (etaf-telega-gui--info) :draft) ""))))
+             (etaf-telega-gui--action
+              "compose-sticker"
+              (lambda (_)
+                (etaf-telega-open-stickers ""))
+              (lambda (_)
+                (and (string-match-p "🎉" (etaf-telega-gui--text))
+                     (string-match-p "贴纸" (etaf-telega-gui--text)))))
+             (etaf-telega-gui--action
+              "compose-sticker-send"
+              (lambda (_) (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (equal (car (etaf-telega-backend-fake-files etaf-telega-gui--backend))
+                       '(:kind sticker :path 7))))
              (etaf-telega-gui--action
               "attach-file"
               (lambda (_)

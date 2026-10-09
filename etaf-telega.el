@@ -169,6 +169,19 @@
 ;; Send the file at PATH as KIND with the composer draft as caption.
 ;; Function: etaf-telega-cancel-upload ()
 ;; Cancel the file upload in progress (C-c C-u).
+;; Function: etaf-telega-open-emoji ()
+;; Show the emoji picker over the composer (C-c C-e); RET inserts the
+;; selected emoji at the end of the draft.
+;; Function: etaf-telega-open-stickers (query)
+;; Show the sticker picker over the composer (C-c C-S); QUERY is an emoji or
+;; keyword.  RET sends the selected sticker.
+;; Function: etaf-telega-popover-next ()
+;; Move the composer popover's selection down (C-n).
+;; Function: etaf-telega-popover-previous ()
+;; Move the composer popover's selection up (C-p).
+;; Function: etaf-telega-popover-select (&optional index)
+;; Insert or send the composer popover's item INDEX, the current one by
+;; default (RET or a click).
 ;; Function: etaf-telega-reply ()
 ;; Arm a reply to the message under point; the next send quotes it (r).
 ;; Function: etaf-telega-edit ()
@@ -243,6 +256,14 @@
 ;; accepted message through `:sent'.
 ;; Function: etaf-telega-backend-cancel-upload (backend path)
 ;; Cancel the pending upload of the file at PATH.
+;; Function: etaf-telega-backend-search-members (backend chat-id query callback)
+;; Search the conversation's members by QUERY; CALLBACK receives (:id :name
+;; :username) plists for the mention picker.
+;; Function: etaf-telega-backend-search-stickers (backend query callback)
+;; Search stickers by QUERY; CALLBACK receives picker plists with :id, :emoji,
+;; :label, :file-id, :thumb-id, :thumb-width, :thumb-height, :width, :height.
+;; Function: etaf-telega-backend-send-sticker (backend chat-id sticker)
+;; Send a picked STICKER to CHAT-ID.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
 ;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.
@@ -267,11 +288,12 @@
 ;; Make conversation ID available to open; a backend with a private-chat
 ;; model, such as Telega, creates a contact's missing chat.
 ;;
-;; Function: etaf-telega-backend-fake-create (&key chats histories responder dormant)
+;; Function: etaf-telega-backend-fake-create (&key chats histories responder dormant members stickers)
 ;; Return an offline backend seeded with CHATS and HISTORIES (a hash table
 ;; from chat id to message plists, newest first).  DORMANT holds conversations
 ;; the initial list does not carry; searching finds them like a server-side
-;; search does.  RESPONDER, when non-nil, is called with (BACKEND TEXT) after
+;; search does.  MEMBERS and STICKERS seed the composer popovers' completion
+;; sources.  RESPONDER, when non-nil, is called with (BACKEND TEXT) after
 ;; each send so a caller can acknowledge through
 ;; `etaf-telega-backend-fake-complete'.
 ;; Function: etaf-telega-backend-fake-sent (backend)

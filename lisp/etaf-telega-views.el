@@ -56,6 +56,8 @@
 (declare-function etaf-telega-chat-search-exit "etaf-telega-app" ())
 (declare-function etaf-telega--chat-search-cancelled "etaf-telega-app" (query))
 (declare-function etaf-telega--chat-search-changed "etaf-telega-app" (query))
+(declare-function etaf-telega--compose-changed "etaf-telega-app" (text))
+(declare-function etaf-telega--popover-choose "etaf-telega-app" (item))
 (declare-function etaf-telega-toggle-details "etaf-telega-app" ())
 (declare-function etaf-telega--list-menu-select "etaf-telega-app" (key))
 (declare-function etaf-telega--chat-menu-select "etaf-telega-app" (key))
@@ -229,6 +231,38 @@ Each chip clears or toggles its option."
                                                               0))))))
                        (etaf-node 'text (list :color (etaf-telega-color :muted))
                                   (list "C-c C-u 取消")))))))
+
+(defun etaf-telega--popover-panel (model)
+  "Return the composer's open completion popover, or nil."
+  (let ((popover (etaf-value (plist-get model :popover))))
+    (when popover
+      (let ((index (or (plist-get popover :index) 0)))
+        (etaf-node
+         'flex (list :flex-direction 'column :width 'stretch
+                     :background-color (etaf-telega-color :surface-2)
+                     :border (list '(px 1) 'solid (etaf-telega-color :border))
+                     :padding '((lh 0) (ch 1)) :margin-bottom '(lh 1)
+                     :max-height '(lh 9) :overflow 'hidden)
+         (append
+          (list (etaf-node 'text (list :color (etaf-telega-color :muted)
+                                       :font-weight 'bold)
+                           (list (format "%s · C-n/C-p 选择 · RET 插入"
+                                         (or (plist-get popover :title) "")))))
+          (cl-loop for item in (plist-get popover :items)
+                   for i from 0
+                   collect
+                   (etaf-node
+                    'flex (list :flex-direction 'row :align-items 'center
+                                :column-gap '(ch 1) :width 'stretch
+                                :background-color (when (= i index)
+                                                    (etaf-telega-color :selected))
+                                :role 'button :tab-index 0
+                                :aria-label (plist-get item :label)
+                                :hover-style
+                                (list :background-color (etaf-telega-color :selected))
+                                :on-press (lambda ()
+                                            (etaf-telega--popover-choose item)))
+                    (list (etaf-node 'text nil (list (plist-get item :label))))))))))))
 
 (defun etaf-telega--group-digits (count)
   "Return natural number COUNT with thousands separated by commas."
@@ -1159,17 +1193,19 @@ until the reader scrolls away; reaching its top asks for older messages."
                   (text :color (etaf-telega-color :accent) (expr label))
                   (expr (etaf-telega--spacer))
                   (text :color (etaf-telega-color :muted) "C-c C-k 取消")))))
+       (expr (etaf-telega--popover-panel model))
        (expr (etaf-telega--upload-strip model))
        (expr (etaf-telega--send-options-strip model))
        (flex :flex-direction 'row :align-items 'center :width 'stretch
              :column-gap '(ch 1)
          (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
            (etaf-text-input
-            :ref 'telega-composer :bind (plist-get model :draft)
+            :ref 'telega-composer :value (plist-get model :draft)
             :label "消息" :hide-label t :rows 1 :width 'stretch :variant 'plain
             :placeholder "写消息…  (i 输入 · RET 发送 · S-RET 换行)"
             :submit-on-return t
             :keymap etaf-telega--composer-keymap
+            :on-change #'etaf-telega--compose-changed
             :on-submit #'etaf-telega-send
             :on-cancel #'etaf-telega--keep-draft))
          (etaf-ui-icon :name 'send :color (etaf-telega-color :accent)

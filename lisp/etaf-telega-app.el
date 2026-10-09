@@ -690,6 +690,7 @@ Each command operates on the message under point.")
       (when searching
         (etaf-telega-model-add-recent model id)
         (etaf-telega-model-set-search model nil))
+      (etaf-telega-model-set-popover model nil)
       (unless (equal (plist-get previous :id) id)
         (etaf-telega-model-set-chat-search model nil)
         (etaf-telega--save-draft (plist-get previous :id)
@@ -764,18 +765,19 @@ On a compact chat screen the client first returns to the list."
 The local substring filter already shows loaded matches; the backend search
 fills in conversations the list has not loaded.  A stale answer, one whose
 query is no longer current, is dropped."
-  (let ((model (etaf-telega--model)))
-    (etaf-batch
-      (etaf-telega-model-set-search model t query)
-      (etaf-telega-model-set-search-results model nil))
-    (unless (string-empty-p (string-trim query))
-      (let ((token query))
-        (etaf-telega-backend-search-chats
-         etaf-telega--backend query
-         (lambda (chats)
-           (when (and (eq model etaf-telega--model)
-                      (equal token (etaf-telega-model-search model)))
-             (etaf-telega-model-set-search-results model chats))))))))
+  (when etaf-telega--model
+    (let ((model etaf-telega--model))
+      (etaf-batch
+        (etaf-telega-model-set-search model t query)
+        (etaf-telega-model-set-search-results model nil))
+      (unless (string-empty-p (string-trim query))
+        (let ((token query))
+          (etaf-telega-backend-search-chats
+           etaf-telega--backend query
+           (lambda (chats)
+             (when (and (eq model etaf-telega--model)
+                        (equal token (etaf-telega-model-search model)))
+               (etaf-telega-model-set-search-results model chats)))))))))
 
 (defun etaf-telega--search-submit (_query)
   "Open the first conversation the list search shows."
@@ -825,18 +827,19 @@ query is no longer current, is dropped."
   "Track the message search QUERY and ask the backend for matches.
 Local matches over the loaded history show at once; the backend fills in
 messages the client has not loaded.  A stale answer is dropped."
-  (let ((model (etaf-telega--model)))
-    (etaf-batch
-      (etaf-telega-model-set-chat-search model query)
-      (etaf-telega-model-set-chat-search-results model nil))
-    (unless (string-empty-p (string-trim query))
-      (let ((token query))
-        (etaf-telega-backend-search-messages
-         etaf-telega--backend query
-         (lambda (messages)
-           (when (and (eq model etaf-telega--model)
-                      (equal token (etaf-telega-model-chat-search model)))
-             (etaf-telega-model-set-chat-search-results model messages))))))))
+  (when etaf-telega--model
+    (let ((model etaf-telega--model))
+      (etaf-batch
+        (etaf-telega-model-set-chat-search model query)
+        (etaf-telega-model-set-chat-search-results model nil))
+      (unless (string-empty-p (string-trim query))
+        (let ((token query))
+          (etaf-telega-backend-search-messages
+           etaf-telega--backend query
+           (lambda (messages)
+             (when (and (eq model etaf-telega--model)
+                        (equal token (etaf-telega-model-chat-search model)))
+               (etaf-telega-model-set-chat-search-results model messages)))))))))
 
 (defun etaf-telega-toggle-details ()
   "Show or hide the open conversation's details pane (C-c i)."
@@ -1079,8 +1082,16 @@ history and closes the search."
     (define-key map (kbd "C-c C-d") #'etaf-telega-clear-draft)
     (define-key map (kbd "C-c C-a") #'etaf-telega-attach)
     (define-key map (kbd "C-c C-u") #'etaf-telega-cancel-upload)
+    (define-key map (kbd "RET") #'etaf-telega--compose-return)
+    (define-key map (kbd "C-n") #'etaf-telega-popover-next)
+    (define-key map (kbd "C-p") #'etaf-telega-popover-previous)
+    (define-key map (kbd "TAB") #'etaf-telega-popover-select)
+    (define-key map (kbd "C-c C-e") #'etaf-telega-open-emoji)
+    (define-key map (kbd "C-c C-S") #'etaf-telega-open-stickers)
+    (define-key map (kbd "C-g") #'etaf-telega--compose-cancel)
+    (define-key map (kbd "<escape>") #'etaf-telega--compose-cancel)
     map)
-  "Composer keys: sent texts, send options and attachments.")
+  "Composer keys: sent texts, send options, attachments and popovers.")
 
 (defun etaf-telega--reset-input-history ()
   "Stop browsing the open conversation's input history."
@@ -1273,6 +1284,172 @@ message is accepted and the pending upload shows in the status line."
     (etaf-telega-model-set-status
      model (format "正在上传 %s：%d%%" name (round (* 100 progress))))))
 
+(defconst etaf-telega--emoji-choices
+  '("👍" "❤️" "🔥" "😂" "😮" "😢" "🎉" "👏" "🙏" "👌"
+    "🤔" "💯" "😍" "🥰" "😎" "🤝" "✨" "☕" "🍺" "🌙")
+  "Emoji offered by the composer's emoji picker.")
+
+(defun etaf-telega--popover-close ()
+  "Close the composer popover."
+  (when etaf-telega--model
+    (etaf-telega-model-set-popover etaf-telega--model nil)))
+
+(defun etaf-telega--popover-open (kind title items)
+  "Show the composer popover of KIND with TITLE over ITEMS."
+  (when items
+    (etaf-telega-model-set-popover
+     (etaf-telega--model)
+     (list :kind kind :title title :items items :index 0))))
+
+(defun etaf-telega--popover-mention (query)
+  "Offer the open conversation's members matching QUERY."
+  (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model)))
+    (etaf-telega-backend-search-members
+     etaf-telega--backend (plist-get chat :id) query
+     (lambda (members)
+       (when (and (eq model etaf-telega--model)
+                  (string-match-p "@\\([[:alnum:]_]*\\)\\'"
+                                  (etaf-telega-model-draft model)))
+         (etaf-telega--popover-open
+          'mention "选择成员"
+          (mapcar (lambda (member)
+                    (let ((handle (or (plist-get member :username)
+                                      (plist-get member :name))))
+                      (list :label (format "@%s" handle)
+                            :insert (format "@%s " handle))))
+                  members)))))))
+
+(defun etaf-telega--popover-hashtag (query)
+  "Offer hashtags from the loaded history matching QUERY."
+  (let* ((model (etaf-telega--model))
+         (tags (let (result)
+                 (dolist (message (etaf-telega-model-messages model))
+                   (let ((start 0)
+                         (text (or (plist-get message :text) "")))
+                     (while (string-match "#\\([[:alnum:]_]+\\)" text start)
+                       (push (match-string 1 text) result)
+                       (setq start (match-end 0)))))
+                 (delete-dups (nreverse result))))
+         (items (cl-remove-if-not
+                 (lambda (tag) (string-prefix-p query tag t))
+                 tags)))
+    (etaf-telega--popover-open
+     'hashtag "标签"
+     (mapcar (lambda (tag)
+               (list :label (format "#%s" tag) :insert (format "#%s " tag)))
+             (cl-subseq items 0 (min 12 (length items)))))))
+
+(defun etaf-telega--compose-changed (text)
+  "Track composer TEXT and open a completion popover when it asks for one.
+A closing client still ends its active input session, so a missing model
+just drops the update."
+  (when etaf-telega--model
+    (let ((model etaf-telega--model))
+      (etaf-telega-model-set-draft model text)
+      (cond
+       ((and (etaf-telega-model-chat model)
+             (string-match "@\\([[:alnum:]_]*\\)\\'" text))
+        (etaf-telega--popover-mention (match-string 1 text)))
+       ((string-match "#\\([[:alnum:]_]*\\)\\'" text)
+        (etaf-telega--popover-hashtag (match-string 1 text)))
+       (t (etaf-telega--popover-close))))))
+
+(defun etaf-telega-open-emoji ()
+  "Show the emoji picker over the composer (C-c C-e)."
+  (interactive)
+  (etaf-telega-compose)
+  (etaf-telega--popover-open
+   'emoji "表情"
+   (mapcar (lambda (emoji) (list :label emoji :insert emoji))
+           etaf-telega--emoji-choices)))
+
+(defun etaf-telega-open-stickers (query)
+  "Show the sticker picker over the composer (C-c C-S).
+QUERY is an emoji or keyword; an empty one asks for trending stickers."
+  (interactive (list (read-string "贴纸（表情或关键词，可留空）：")))
+  (etaf-telega-compose)
+  (let ((model (etaf-telega--model)))
+    (etaf-telega-backend-search-stickers
+     etaf-telega--backend query
+     (lambda (stickers)
+       (when (eq model etaf-telega--model)
+         (etaf-telega--popover-open
+          'sticker "贴纸"
+          (mapcar (lambda (sticker)
+                    (list :label (or (plist-get sticker :emoji) "贴纸")
+                          :sticker sticker))
+                  stickers)))))))
+
+(defun etaf-telega--popover-step (delta)
+  "Move the popover selection DELTA items, wrapping at the ends."
+  (let* ((model (etaf-telega--model))
+         (popover (etaf-telega-model-popover model)))
+    (when popover
+      (let* ((items (plist-get popover :items))
+             (index (mod (+ (plist-get popover :index) delta) (length items))))
+        (etaf-telega-model-set-popover
+         model (plist-put (copy-sequence popover) :index index))))))
+
+(defun etaf-telega-popover-next ()
+  "Move the composer popover's selection down (C-n)."
+  (interactive)
+  (etaf-telega--popover-step 1))
+
+(defun etaf-telega-popover-previous ()
+  "Move the composer popover's selection up (C-p)."
+  (interactive)
+  (etaf-telega--popover-step -1))
+
+(defun etaf-telega-popover-select (&optional index)
+  "Select the composer popover's item INDEX, the current one by default."
+  (interactive)
+  (let* ((model (etaf-telega--model))
+         (popover (etaf-telega-model-popover model)))
+    (when popover
+      (when (numberp index)
+        (setq popover (plist-put (copy-sequence popover) :index index))
+        (etaf-telega-model-set-popover model popover))
+      (let ((item (nth (or (plist-get popover :index) 0) (plist-get popover :items))))
+        (pcase (plist-get popover :kind)
+          ('sticker
+           (etaf-telega--popover-close)
+           (etaf-telega-backend-send-sticker
+            etaf-telega--backend
+            (plist-get (etaf-telega-model-chat model) :id)
+            (plist-get item :sticker)))
+          (_
+           (let ((text (etaf-telega-model-draft model))
+                 (insert (plist-get item :insert)))
+             (etaf-telega--popover-close)
+             (etaf-telega--set-composer
+              (pcase (plist-get popover :kind)
+                ((or 'mention 'hashtag)
+                 (replace-regexp-in-string "[@#][[:alnum:]_]*\\'" insert text))
+                (_ (concat text insert)))))))))))
+
+(defun etaf-telega--popover-choose (item)
+  "Select ITEM from the open composer popover."
+  (let* ((model (etaf-telega--model))
+         (popover (etaf-telega-model-popover model))
+         (index (cl-position item (plist-get popover :items) :test #'equal)))
+    (when index
+      (etaf-telega-popover-select index))))
+
+(defun etaf-telega--compose-return ()
+  "Select the popover's item, or submit the composer."
+  (interactive)
+  (if (etaf-telega-model-popover (etaf-telega--model))
+      (etaf-telega-popover-select)
+    (etaf-text-input-end)))
+
+(defun etaf-telega--compose-cancel ()
+  "Close the popover, or leave the composer keeping its text."
+  (interactive)
+  (if (etaf-telega-model-popover (etaf-telega--model))
+      (etaf-telega--popover-close)
+    (etaf-text-input-end t)))
+
 (defun etaf-telega-compose ()
   "Start typing in the composer."
   (interactive)
@@ -1319,6 +1496,7 @@ An edit restores the draft that was present before editing began."
     (etaf-text-input-end t))
   (let* ((model (etaf-telega--model))
          (compose (etaf-telega-model-compose model)))
+    (etaf-telega--popover-close)
     (when compose
       (etaf-batch
         (when (eq (plist-get compose :kind) 'edit)
@@ -1334,6 +1512,7 @@ stays until the backend accepts it, so a failure keeps the text for retry."
          (compose (etaf-telega-model-compose model)))
     (unless (etaf-telega-model-chat model)
       (user-error "先选择一个对话"))
+    (etaf-telega--popover-close)
     (unless (string-empty-p (string-trim text))
       (etaf-telega--reset-input-history)
       (let ((options (etaf-telega-model-send-options model)))
@@ -1356,6 +1535,7 @@ stays until the backend accepts it, so a failure keeps the text for retry."
   "Keep TEXT as the draft after leaving the composer.
 Leaving an edit restores the draft captured before editing."
   (when etaf-telega--model
+    (etaf-telega--popover-close)
     (etaf-telega--reset-input-history)
     (let ((compose (etaf-telega-model-compose etaf-telega--model)))
       (etaf-batch

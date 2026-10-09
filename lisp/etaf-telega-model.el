@@ -53,7 +53,8 @@
         :send-no-preview (etaf-ref nil :name 'etaf-telega-send-no-preview)
         :send-at (etaf-ref nil :name 'etaf-telega-send-at)
         :send-markdown (etaf-ref nil :name 'etaf-telega-send-markdown)
-        :upload (etaf-ref nil :name 'etaf-telega-upload)))
+        :upload (etaf-ref nil :name 'etaf-telega-upload)
+        :popover (etaf-ref nil :name 'etaf-telega-popover)))
 
 (defun etaf-telega-model-screen (model)
   "Return MODEL's shown screen, `root' or `chat'."
@@ -356,6 +357,14 @@ KEY is `silent', `no-preview', `at' or `markdown'."
 (defun etaf-telega-model-set-upload (model upload)
   "Set MODEL's pending file UPLOAD plist, or nil when none is running."
   (setf (etaf-value (plist-get model :upload)) upload))
+
+(defun etaf-telega-model-popover (model)
+  "Return MODEL's composer popover, a (:kind :title :items :index) plist, or nil."
+  (etaf-value (plist-get model :popover)))
+
+(defun etaf-telega-model-set-popover (model popover)
+  "Set MODEL's composer POPOVER plist, or nil to close it."
+  (setf (etaf-value (plist-get model :popover)) popover))
 
 (provide 'etaf-telega-model)
 ;;; etaf-telega-model.el ends here

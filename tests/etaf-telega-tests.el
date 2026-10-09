@@ -317,6 +317,42 @@ fake backend's send responder."
                      t))
       (should (equal (etaf-telega-test--info :status) "已取消上传")))))
 
+(ert-deftest etaf-telega-tests-compose-popovers-complete-and-pick ()
+  "Typing @ or # completes; the emoji and sticker pickers insert or send."
+  (let ((backend (etaf-telega-backend-fake-create
+                  :chats (list (list :id 1 :title "Alice" :unread 0 :preview "在的"
+                                     :kind 'private :time "10:01"))
+                  :histories (etaf-telega-test--histories
+                              (list 1 (list :id 11 :sender "Alice" :time "10:00"
+                                            :text "下周见 #计划")))
+                  :members (list (list :id 2 :name "Alice" :username "alice"))
+                  :stickers (list (list :id 7 :emoji "🎉" :label "派对"
+                                        :file-id 71 :thumb-id 72
+                                        :width 512 :height 512)))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i @al")
+      (should (string-search "@alice" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-test--info :draft) "@alice "))
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-test--keys "i ")
+      (etaf-telega-test--keys "#计")
+      (should (string-search "#计划" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-test--info :draft) "@alice #计划 "))
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-test--keys "i C-c C-e")
+      (should (string-search "👍" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "RET")
+      (should (string-search "👍" (etaf-telega-test--info :draft)))
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-open-stickers "")
+      (should (string-search "🎉" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "RET")
+      (should (equal (car (etaf-telega-backend-fake-files backend))
+                     '(:kind sticker :path 7))))))
+
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
   "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))

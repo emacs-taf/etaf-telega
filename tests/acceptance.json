@@ -96,6 +96,11 @@
    "purpose": "Cancelling an upload marks it cancelled and clears the status."
   },
   {
+   "name": "etaf-telega-tests-compose-popovers-complete-and-pick",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Typing @ or # completes; the emoji and sticker pickers insert or send."
+  },
+  {
    "name": "etaf-telega-tests-draft-survives-until-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "A pending send keeps the draft and clears only after acceptance."
