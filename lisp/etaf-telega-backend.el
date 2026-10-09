@@ -1101,8 +1101,11 @@ The message list of an open chat is maintained by
 
 (defun etaf-telega-backend-telega--message (message)
   "Report a later MESSAGE to every backend viewing its chat.
-An outgoing message that matches a pending send confirms it through `:sent';
-every other message reaches the application through `:message'."
+An outgoing message that matches a pending send or an upload confirms it
+through `:sent'; every other message reaches the application through
+`:message'.  Telega only posts messages that are already sent, so an
+upload reports its confirmation from here: the send callback's own answer
+is the local copy TDLib replaces once the upload finishes."
   (let ((chat-id (plist-get message :chat_id)))
     (dolist (backend etaf-telega-backend-telega-instances)
       (when (equal (etaf-telega-backend-telega-chat-id backend) chat-id)
@@ -1117,11 +1120,20 @@ every other message reaches the application through `:message'."
                   (record (cl-find text pending
                                    :key (lambda (item) (plist-get item :text))
                                    :test #'equal))
-                  (ack (and (plist-get projected :outgoing) record)))
+                  (file (plist-get (plist-get projected :file) :name))
+                  (upload (and file (plist-get projected :outgoing)
+                               (cl-find file (etaf-telega-backend-telega-uploads backend)
+                                        :key (lambda (item) (plist-get item :name))
+                                        :test #'equal)))
+                  (ack (and (plist-get projected :outgoing) (or record upload))))
              (if ack
                  (progn
-                   (setf (etaf-telega-backend-telega-pending backend)
-                         (delq record pending))
+                   (when record
+                     (setf (etaf-telega-backend-telega-pending backend)
+                           (delq record pending)))
+                   (when upload
+                     (setf (etaf-telega-backend-telega-uploads backend)
+                           (delq upload (etaf-telega-backend-telega-uploads backend))))
                    (when-let* ((report (plist-get callbacks :sent)))
                      (funcall report
                               (append projected
@@ -1623,14 +1635,13 @@ Telega's commands resolve their target through `telega-chat-at' and
            (etaf-telega-backend-telega--guard
             backend "发送附件"
             (lambda ()
+              ;; MESSAGE is TDLib's local copy; the confirmed message reaches
+              ;; the application through `--message', which replaces this
+              ;; record instead of showing the file twice.
               (push (list :path path :name name :message message)
                     (etaf-telega-backend-telega-uploads backend))
               (when-let* ((report (plist-get callbacks :upload)))
-                (funcall report (list :name name :progress 0)))
-              (when-let* ((report (plist-get callbacks :sent)))
-                (funcall report
-                         (etaf-telega-backend-telega--project-message
-                          backend message)))))))
+                (funcall report (list :name name :progress 0)))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))
     path))
