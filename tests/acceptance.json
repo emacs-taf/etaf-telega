@@ -101,6 +101,11 @@
    "purpose": "Older pages load above the history until the chat's first message."
   },
   {
+   "name": "etaf-telega-tests-jump-loads-and-selects-a-message",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Jumping to an unloaded message loads its page and selects it."
+  },
+  {
    "name": "etaf-telega-tests-day-separators-label-each-date",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Each new date opens with a day label; today reads as 今天."

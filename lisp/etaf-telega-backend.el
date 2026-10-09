@@ -26,6 +26,7 @@
 ;;   :edited   (message plist)          message whose text this client replaced
 ;;   :updated  (message plist)          message changed elsewhere (content or
 ;;                                      edit), replacing the copy with its id
+;;   :jump     (list of messages)       a page loaded around one message
 ;;   :deleted  (id)                     id of a removed message
 ;;   :read     (list of ids)            messages accepted as read
 ;;   :error    (string)                 readable failure
@@ -50,6 +51,8 @@
 ;;   (stop BACKEND)                       stop observing; keep the account
 ;;   (select BACKEND CHAT-ID)             open a chat and load its newest page
 ;;   (history BACKEND &key before limit)  load messages older than BEFORE
+;;   (around BACKEND MESSAGE-ID &key limit)  load the page at MESSAGE-ID,
+;;                                        newest first; arrives as `:jump'
 ;;   (send BACKEND TEXT &optional REPLY-TO)  send, optionally replying
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
@@ -86,6 +89,10 @@
 (cl-defgeneric etaf-telega-backend-history (backend &key before limit)
   "Load a page older than BEFORE in BACKEND's selected chat.
 BEFORE is the oldest loaded message id, or nil for the newest page.")
+
+(cl-defgeneric etaf-telega-backend-around (backend message-id &key limit)
+  "Load the page at MESSAGE-ID in BACKEND's selected chat.
+The page arrives through the `:jump' callback, newest first.")
 
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.")
@@ -193,6 +200,23 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
     (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                    :older)))
       (funcall report (copy-tree (etaf-telega-backend-fake--page backend chat-id index))))))
+
+(cl-defmethod etaf-telega-backend-around ((backend etaf-telega-backend-fake)
+                                          message-id &key limit)
+  "Report the stored page around MESSAGE-ID in BACKEND's selected chat."
+  (ignore limit)
+  (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+         (all (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+         (index (cl-position message-id all
+                             :key (lambda (message) (plist-get message :id))
+                             :test #'equal))
+         (start (and index
+                     (max 0 (- index (1- etaf-telega-backend-fake-page-size))))))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :jump)))
+      (funcall report
+               (copy-tree (and start
+                               (etaf-telega-backend-fake--page backend chat-id start)))))))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake)
                                         text &optional reply-to)
@@ -950,6 +974,29 @@ account and its database."
               backend "加载更早历史"
               (lambda ()
                 (when-let* ((report (plist-get callbacks :older)))
+                  (funcall report
+                           (mapcar (lambda (message)
+                                     (etaf-telega-backend-telega--project-message
+                                      backend message))
+                                   (append (plist-get event :messages) nil)))))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))))
+
+(cl-defmethod etaf-telega-backend-around ((backend etaf-telega-backend-telega)
+                                          message-id &key limit)
+  "Load MESSAGE-ID's page through Telega, newest first."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (chat (and chat-id (telega-chat-get chat-id))))
+    (condition-case err
+        (when chat
+          (telega--getChatHistory
+           chat message-id 0 (or limit 50) nil
+           (lambda (event)
+             (etaf-telega-backend-telega--guard
+              backend "跳转消息"
+              (lambda ()
+                (when-let* ((report (plist-get callbacks :jump)))
                   (funcall report
                            (mapcar (lambda (message)
                                      (etaf-telega-backend-telega--project-message

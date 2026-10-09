@@ -315,6 +315,23 @@ fake backend's send responder."
         (should (< (string-search "第11条" text) (string-search "第13条" text)
                    (string-search "第15条" text)))))))
 
+(ert-deftest etaf-telega-tests-jump-loads-and-selects-a-message ()
+  "Jumping to an unloaded message loads its page and selects it."
+  (let ((backend (etaf-telega-test--backend
+                  nil
+                  (etaf-telega-test--histories
+                   (cons 1 (cl-loop for id from 50 downto 11
+                                    collect (list :id id :sender "Alice"
+                                                  :time "10:00"
+                                                  :text (format "第%d条" id))))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (should (< (etaf-telega-test--info :messages) 40))
+      (should-not (string-search "第11条" (etaf-telega-test--text)))
+      (etaf-telega-show-message 11)
+      (should (equal (etaf-telega-test--info :selected) 11))
+      (should (string-search "第11条" (etaf-telega-test--text))))))
+
 (ert-deftest etaf-telega-tests-day-separators-label-each-date ()
   "Each new date opens with a day label; today reads as 今天."
   (let ((today (format-time-string "%Y-%m-%d")))

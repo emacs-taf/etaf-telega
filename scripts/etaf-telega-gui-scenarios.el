@@ -222,6 +222,9 @@ Wait briefly for a layout or menu change to finish rendering the control."
               "jump-newest" (lambda (_) (execute-kbd-macro (kbd ">")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
+              "show-message" (lambda (_) (etaf-telega-show-message 11))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
+             (etaf-telega-gui--action
               "native-copy" (lambda (_) (execute-kbd-macro (kbd "p p c")))
               (lambda (_) (etaf-telega-gui--native-p 'telega-msg-copy-dwim 11)))
              (etaf-telega-gui--action

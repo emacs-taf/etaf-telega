@@ -62,6 +62,9 @@ Tests bind this to a fake backend factory so no network is touched.")
 (defvar etaf-telega--jump-pending nil
   "Non-nil until the opened chat's first page moves point to the composer.")
 
+(defvar etaf-telega--jump-target nil
+  "Message id a jump is loading around, or nil.")
+
 (defconst etaf-telega--history-retry-limit 2
   "Empty history answers retried before the history counts as complete.
 TDLib answers its first requests for a chat from the local database and may
@@ -235,6 +238,21 @@ history following its newest message keeps following it."
     (etaf-telega--retry #'etaf-telega-load-more))
    (t (setq etaf-telega--history-end t))))
 
+(defun etaf-telega--on-jump (messages)
+  "Merge the MESSAGES page loaded around a requested message and select it."
+  (let* ((model etaf-telega--model)
+         (target etaf-telega--jump-target))
+    (when messages
+      (etaf-telega-model-prepend-messages model (reverse messages)))
+    (when target
+      (setq etaf-telega--jump-target nil)
+      (if (etaf-telega-model-message-by-id model target)
+          (progn
+            (etaf-telega-model-set-selected model target)
+            (etaf-telega--goto-ref etaf-telega--buffer
+                                   (etaf-telega--ref 'message target)))
+        (etaf-telega-model-set-status model "没有找到这条消息")))))
+
 (defun etaf-telega--on-updated (message)
   "Replace MESSAGE's copy and refresh a viewer still showing its preview."
   (let ((model etaf-telega--model))
@@ -275,6 +293,7 @@ history following its newest message keeps following it."
                               (finish-compose message)
                               (etaf-telega-model-replace-message model message))))
           :updated (report #'etaf-telega--on-updated)
+          :jump (report #'etaf-telega--on-jump)
           :deleted (report #'etaf-telega-model-remove-message model)
           :message (report #'etaf-telega-model-append-message model)
           :error (report (lambda (text)
@@ -367,15 +386,20 @@ A nil CURRENT steps from past the last id."
                                (etaf-telega--ref 'message target)))))))
 
 (defun etaf-telega-show-message (id)
-  "Select the open chat's message ID and move point to it."
-  (interactive (list (etaf-telega--row-at 'message)))
-  (when-let* ((model (etaf-telega--model))
-              ((cl-find id (etaf-telega-model-messages model)
-                        :key (lambda (message) (plist-get message :id))
-                        :test #'equal)))
+  "Select the open chat's message ID, loading its page when not loaded."
+  (interactive (list (or (etaf-telega--row-at 'message)
+                         (user-error "先把光标移到一条消息上"))))
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-chat model)
+      (user-error "先打开一个对话"))
     (etaf-telega--show-screen 'chat)
-    (etaf-telega-model-set-selected model id)
-    (etaf-telega--goto-ref etaf-telega--buffer (etaf-telega--ref 'message id))))
+    (if (etaf-telega-model-message-by-id model id)
+        (progn
+          (etaf-telega-model-set-selected model id)
+          (etaf-telega--goto-ref etaf-telega--buffer
+                                 (etaf-telega--ref 'message id)))
+      (setq etaf-telega--jump-target id)
+      (etaf-telega-backend-around etaf-telega--backend id))))
 
 (defun etaf-telega-next-message ()
   "Move to the next message, or to the composer after the newest one."
@@ -487,7 +511,8 @@ Each command operates on the message under point.")
     (setq etaf-telega--history-end nil
           etaf-telega--older-pending nil
           etaf-telega--history-retries 0
-          etaf-telega--jump-pending t)
+          etaf-telega--jump-pending t
+          etaf-telega--jump-target nil)
     (etaf-batch
       (when searching
         (etaf-telega-model-add-recent model id)

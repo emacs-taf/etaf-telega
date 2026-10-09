@@ -91,6 +91,9 @@
 ;; Function: etaf-telega-jump-newest ()
 ;; Show the newest messages and select the newest one (> or M->, and the
 ;; chat header's more menu).
+;; Function: etaf-telega-show-message (id)
+;; Select the open chat's message ID; when it is not loaded, load its page
+;; first and select it once the page arrives.
 ;; Function: etaf-telega-chat-search ()
 ;; Search the open conversation's loaded messages (/ in a chat, or the chat
 ;; header's search button): a search field replaces the title and the
@@ -177,6 +180,9 @@
 ;; Open the chat with CHAT-ID and load its newest history page.
 ;; Function: etaf-telega-backend-history (backend &key before limit)
 ;; Load messages older than BEFORE, the oldest loaded message id.
+;; Function: etaf-telega-backend-around (backend message-id &key limit)
+;; Load the page at MESSAGE-ID in the selected chat; the page arrives through
+;; the `:jump' callback, newest first.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.
 ;; Function: etaf-telega-backend-edit (backend message text)
