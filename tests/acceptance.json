@@ -206,6 +206,11 @@
    "purpose": "Typing in the list search finds conversations the list has not loaded."
   },
   {
+   "name": "etaf-telega-tests-chat-search-finds-server-history",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Message search reaches a match the loaded history does not carry."
+  },
+  {
    "name": "etaf-telega-tests-chat-search-and-details-pane",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Message search narrows the open history and the details pane toggles on demand."

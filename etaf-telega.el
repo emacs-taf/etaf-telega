@@ -112,9 +112,11 @@
 ;; Function: etaf-telega-next-outgoing ()
 ;; Select the next message sent by the account (M-g o).
 ;; Function: etaf-telega-chat-search ()
-;; Search the open conversation's loaded messages (/ in a chat, or the chat
-;; header's search button): a search field replaces the title and the
-;; history shows only messages whose text or sender contains the query.
+;; Search the open conversation (/ in a chat, or the chat header's search
+;; button): a search field replaces the title, the history shows messages
+;; whose text or sender contains the query, and the backend's server-side
+;; search adds matches the client has not loaded.  RET on a result jumps to
+;; it in the history and closes the search.
 ;; Function: etaf-telega-chat-search-exit ()
 ;; Close the message search and show the whole history again.
 ;; Function: etaf-telega-load-more ()
@@ -226,6 +228,9 @@
 ;; Function: etaf-telega-backend-search-chats (backend query callback)
 ;; Search the account for conversations matching QUERY, including ones the
 ;; list has not loaded; CALLBACK receives chat projections.
+;; Function: etaf-telega-backend-search-messages (backend query callback)
+;; Search the selected chat's full history for QUERY, including messages the
+;; client has not loaded; CALLBACK receives message projections, newest first.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
 ;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.

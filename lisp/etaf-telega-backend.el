@@ -59,6 +59,8 @@
 ;;                                        empty TEXT clears it
 ;;   (search-chats BACKEND QUERY CALLBACK)  search the account for
 ;;                                        conversations matching QUERY
+;;   (search-messages BACKEND QUERY CALLBACK)  search the selected chat's
+;;                                        full history for QUERY
 ;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
 ;;                                        replying, with send options
 ;;                                        (:silent :no-preview :at :markdown)
@@ -114,6 +116,11 @@ The message arrives through the `:jump' callback.")
 CALLBACK receives a list of chat projections, including conversations the
 account has not loaded into the list yet.  QUERY matching is the backend's
 server-side search, not the client's local substring filter.")
+
+(cl-defgeneric etaf-telega-backend-search-messages (backend query callback)
+  "Search BACKEND's selected chat for messages matching QUERY.
+CALLBACK receives message projections, newest first, including messages the
+client has not loaded; QUERY matching is the backend's search.")
 
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
@@ -324,6 +331,21 @@ them like a server-side search does."
                (append (etaf-telega-backend-fake-chats backend)
                        (etaf-telega-backend-fake-dormant backend)))))))
 
+(cl-defmethod etaf-telega-backend-search-messages ((backend etaf-telega-backend-fake)
+                                                   query callback)
+  "Report BACKEND's stored messages whose text matches QUERY."
+  (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+         (needle (downcase (string-trim (or query ""))))
+         (messages (gethash chat-id (etaf-telega-backend-fake-histories backend))))
+    (funcall callback
+             (copy-tree
+              (cl-remove-if-not
+               (lambda (message)
+                 (or (string-empty-p needle)
+                     (string-search needle
+                                     (downcase (or (plist-get message :text) "")))))
+               messages)))))
+
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
 
@@ -489,6 +511,9 @@ like a real sent message instead of colliding with existing ids."
                   (chat &optional draft-msg))
 (declare-function telega--searchChatsOnServer "telega-tdlib"
                   (query &optional limit callback))
+(declare-function telega--searchChatMessages "telega-tdlib"
+                  (chat tdlib-msg-filter from-msg-id offset
+                        &key query limit sender topic callback))
 (defvar telega-chat-completing-sort-criteria)
 (defvar telega--info)
 (defvar telega--chats)
@@ -1036,6 +1061,26 @@ draft normally; the failure only reaches the status line."
                    (mapcar (lambda (chat)
                              (etaf-telega-backend-telega--project-chat chat))
                            (delq nil (append chats nil))))))))))
+
+(cl-defmethod etaf-telega-backend-search-messages ((backend etaf-telega-backend-telega)
+                                                   query callback)
+  "Report Telega's matches for QUERY in the selected chat's history."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (chat (and chat-id (telega-chat-get chat-id))))
+    (when (and chat query (not (string-empty-p (string-trim query))))
+      (telega--searchChatMessages
+       chat (list :@type "searchMessagesFilterEmpty") 0 0
+       :query query :limit 50
+       :callback
+       (lambda (reply)
+         (etaf-telega-backend-telega--guard
+          backend "搜索消息"
+          (lambda ()
+            (funcall callback
+                     (mapcar (lambda (message)
+                               (etaf-telega-backend-telega--project-message
+                                backend message))
+                             (append (plist-get reply :messages) nil))))))))))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)

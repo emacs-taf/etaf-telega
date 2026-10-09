@@ -55,6 +55,7 @@
 (declare-function etaf-telega-chat-search "etaf-telega-app" ())
 (declare-function etaf-telega-chat-search-exit "etaf-telega-app" ())
 (declare-function etaf-telega--chat-search-cancelled "etaf-telega-app" (query))
+(declare-function etaf-telega--chat-search-changed "etaf-telega-app" (query))
 (declare-function etaf-telega-toggle-details "etaf-telega-app" ())
 (declare-function etaf-telega--list-menu-select "etaf-telega-app" (key))
 (declare-function etaf-telega--chat-menu-select "etaf-telega-app" (key))
@@ -438,8 +439,9 @@ title's place and the history shows only matching messages."
                                         #'etaf-telega-chat-search-exit)
                (etaf-view
                 (etaf-search-field :ref 'telega-chat-search
-                                   :bind (plist-get model :chat-search)
+                                   :value (plist-get model :chat-search)
                                    :placeholder "搜索消息" :icon t
+                                   :on-change #'etaf-telega--chat-search-changed
                                    :on-cancel #'etaf-telega--chat-search-cancelled)))
          t)
       (etaf-telega--bar
@@ -1081,6 +1083,18 @@ Telegram bubbles instead of compact lines."
                                               (or (plist-get message :sender) ""))))))
        messages))))
 
+(defun etaf-telega--chat-search-results (model)
+  "Return MODEL's visible message-search results, oldest first.
+Local matches over the loaded history and the backend's search results merge
+by id, so a result can be a message the client has not loaded yet."
+  (let* ((query (or (etaf-value (plist-get model :chat-search)) ""))
+         (local (etaf-telega--search-messages
+                 (etaf-value (plist-get model :messages)) query))
+         (found (etaf-value (plist-get model :chat-search-results))))
+    (sort (etaf-telega--merge-messages local found)
+          (lambda (left right)
+            (< (or (plist-get left :id) 0) (or (plist-get right :id) 0))))))
+
 (etaf-define-component etaf-telega-chat-screen (&key model layout)
   "Render MODEL's chat pane: header, scrolling history and fixed composer.
 LAYOUT `compact' shows Telega's lines with a back button; the wider layouts
@@ -1104,7 +1118,9 @@ until the reader scrolls away; reaching its top asks for older messages."
          (expr
           (let* ((loaded (etaf-value (plist-get model :messages)))
                  (query (etaf-value (plist-get model :chat-search)))
-                 (messages (etaf-telega--search-messages loaded query)))
+                 (messages (if query
+                               (etaf-telega--chat-search-results model)
+                             loaded)))
             (if messages
                 (etaf-telega--message-rows
                  messages selected
@@ -1112,7 +1128,7 @@ until the reader scrolls away; reaching its top asks for older messages."
                  (not (eq layout 'compact)))
               (list (etaf-telega--muted-line
                      (if loaded
-                         (format "已载入的消息中没有“%s”" (string-trim query))
+                         (format "没有匹配“%s”的消息" (string-trim (or query "")))
                        "正在载入消息…"))))))))))
     (etaf-view
      (flex :flex-shrink 0 :flex-direction 'column :width 'stretch

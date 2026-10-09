@@ -46,6 +46,7 @@
         :search-results (etaf-ref nil :name 'etaf-telega-search-results)
         :recent (etaf-ref nil :name 'etaf-telega-recent)
         :chat-search (etaf-ref nil :name 'etaf-telega-chat-search)
+        :chat-search-results (etaf-ref nil :name 'etaf-telega-chat-search-results)
         :details (etaf-ref nil :name 'etaf-telega-details)
         :list-width (etaf-ref nil :name 'etaf-telega-list-width)
         :send-silent (etaf-ref nil :name 'etaf-telega-send-silent)
@@ -307,6 +308,14 @@ Leaving search clears the query and the kind tab."
 (defun etaf-telega-model-set-chat-search (model query)
   "Open MODEL's in-chat search with QUERY, or close it when QUERY is nil."
   (setf (etaf-value (plist-get model :chat-search)) query))
+
+(defun etaf-telega-model-chat-search-results (model)
+  "Return MODEL's backend-side message-search results."
+  (etaf-value (plist-get model :chat-search-results)))
+
+(defun etaf-telega-model-set-chat-search-results (model messages)
+  "Set MODEL's backend-side message-search results to MESSAGES."
+  (setf (etaf-value (plist-get model :chat-search-results)) messages))
 
 (defun etaf-telega-model-details (model)
   "Return non-nil while MODEL shows the chat details pane."

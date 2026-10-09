@@ -410,10 +410,13 @@ A nil CURRENT steps from past the last id."
     (etaf-telega--goto-ref (current-buffer) (etaf-telega--ref 'chat target))))
 
 (defun etaf-telega--move-message (delta)
-  "Move point DELTA messages; past the newest message lands on the composer."
+  "Move point DELTA messages; past the newest message lands on the composer.
+While the message search is open the movement walks its results."
   (let* ((model (etaf-telega--model))
          (ids (mapcar (lambda (message) (plist-get message :id))
-                      (etaf-telega-model-messages model)))
+                      (if (etaf-telega-model-chat-search model)
+                          (etaf-telega--chat-search-results model)
+                        (etaf-telega-model-messages model))))
          (current (etaf-telega--row-at 'message))
          (index (or (cl-position current ids :test #'equal) (length ids)))
          (next (+ index delta)))
@@ -424,7 +427,8 @@ A nil CURRENT steps from past the last id."
       (etaf-telega--goto-ref (current-buffer) 'telega-composer))
      (t
       (let ((target (nth (max 0 next) ids)))
-        (when (< next 0) (etaf-telega-load-more))
+        (when (and (< next 0) (not (etaf-telega-model-chat-search model)))
+          (etaf-telega-load-more))
         (etaf-telega-model-set-selected model target)
         (etaf-telega--goto-ref (current-buffer)
                                (etaf-telega--ref 'message target)))))))
@@ -799,11 +803,30 @@ query is no longer current, is dropped."
   "Close the message search and show the whole history again."
   (interactive)
   (etaf-telega--end-editing)
-  (etaf-telega-model-set-chat-search (etaf-telega--model) nil))
+  (etaf-telega-model-set-chat-search (etaf-telega--model) nil)
+  (etaf-telega-model-set-chat-search-results (etaf-telega--model) nil))
 
 (defun etaf-telega--chat-search-cancelled (_query)
   "Close the message search after its field was cancelled."
-  (etaf-telega-model-set-chat-search (etaf-telega--model) nil))
+  (etaf-telega-model-set-chat-search (etaf-telega--model) nil)
+  (etaf-telega-model-set-chat-search-results (etaf-telega--model) nil))
+
+(defun etaf-telega--chat-search-changed (query)
+  "Track the message search QUERY and ask the backend for matches.
+Local matches over the loaded history show at once; the backend fills in
+messages the client has not loaded.  A stale answer is dropped."
+  (let ((model (etaf-telega--model)))
+    (etaf-batch
+      (etaf-telega-model-set-chat-search model query)
+      (etaf-telega-model-set-chat-search-results model nil))
+    (unless (string-empty-p (string-trim query))
+      (let ((token query))
+        (etaf-telega-backend-search-messages
+         etaf-telega--backend query
+         (lambda (messages)
+           (when (and (eq model etaf-telega--model)
+                      (equal token (etaf-telega-model-chat-search model)))
+             (etaf-telega-model-set-chat-search-results model messages))))))))
 
 (defun etaf-telega-toggle-details ()
   "Show or hide the open conversation's details pane (C-c i)."
@@ -1001,16 +1024,26 @@ a swipe shows the neighbouring filter tab."
         (etaf-telega--step-filter (if (eq direction 'left) 1 -1))))))
 
 (defun etaf-telega-activate ()
-  "Open the media of the message at point, or start typing elsewhere."
+  "Open the media of the message at point, or start typing elsewhere.
+While the message search is open, activating a result jumps to it in the
+history and closes the search."
   (interactive)
-  (let* ((id (etaf-telega--row-at 'message))
-         (message (and id (cl-find id (etaf-telega-model-messages
-                                       (etaf-telega--model))
+  (let* ((model (etaf-telega--model))
+         (id (etaf-telega--row-at 'message))
+         (message (and id (cl-find id (etaf-telega-model-messages model)
                                    :key (lambda (item) (plist-get item :id))
                                    :test #'equal))))
-    (if (and message (not (memq (plist-get message :kind) '(nil text))))
-        (etaf-telega-open-media id)
-      (etaf-telega-compose))))
+    (cond
+     ((and id (etaf-telega-model-chat-search model)
+           (cl-find id (etaf-telega--chat-search-results model)
+                    :key (lambda (item) (plist-get item :id))
+                    :test #'equal))
+      ;; Close the search first, so the jump lands in the full history.
+      (etaf-telega-chat-search-exit)
+      (etaf-telega-show-message id))
+     ((and message (not (memq (plist-get message :kind) '(nil text))))
+      (etaf-telega-open-media id))
+     (t (etaf-telega-compose)))))
 
 (defun etaf-telega-jump-newest ()
   "Show the newest messages and select the newest one."

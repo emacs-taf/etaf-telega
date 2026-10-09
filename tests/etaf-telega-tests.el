@@ -665,6 +665,30 @@ fake backend's send responder."
       (should (equal (etaf-telega-test--info :chat) 9))
       (should (string-search "远端频道" (etaf-telega-test--text))))))
 
+(ert-deftest etaf-telega-tests-chat-search-finds-server-history ()
+  "Message search reaches a match the loaded history does not carry."
+  (let* ((histories
+          (etaf-telega-test--histories
+           (cons 1 (cl-loop for id from 40 downto 1
+                            collect (list :id id :sender "Alice" :time "10:00"
+                                          :text (if (= id 3) "很久以前"
+                                                  (format "消息%d" id)))))))
+         (backend (etaf-telega-test--backend nil histories)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (should-not (string-search "很久以前" (etaf-telega-test--text)))
+      (etaf-telega-chat-search)
+      (etaf-telega-test--keys "很久")
+      (should (string-search "很久以前" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-test--info :chat-search) "很久"))
+      (etaf-telega-test--keys "p")
+      (should (equal (etaf-telega-test--info :selected) 3))
+      (etaf-telega-test--keys "RET")
+      (should-not (etaf-telega-test--info :chat-search))
+      (should (equal (etaf-telega-test--info :selected) 3))
+      (should (string-search "很久以前" (etaf-telega-test--text))))))
+
 (ert-deftest etaf-telega-tests-chat-search-and-details-pane ()
   "/ in a chat narrows the history; C-c i shows and hides the details."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

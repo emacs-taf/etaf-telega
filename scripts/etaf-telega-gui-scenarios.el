@@ -526,6 +526,24 @@ Wait briefly for a layout or menu change to finish rendering the control."
                        (equal (gethash 2 drafts) "草稿B"))))
               t)
              (etaf-telega-gui--action
+              "chat-search-server"
+              (lambda (_)
+                (etaf-telega-chat-search)
+                (etaf-telega-gui--type "你好"))
+              (lambda (_)
+                (and (string-match-p "你好" (etaf-telega-gui--text))
+                     (equal (plist-get (etaf-telega-gui--info) :chat-search) "你好")))
+              t)
+             (etaf-telega-gui--action
+              "chat-search-jump"
+              (lambda (_)
+                (execute-kbd-macro (kbd "RET"))
+                (execute-kbd-macro (kbd "p"))
+                (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (and (null (plist-get (etaf-telega-gui--info) :chat-search))
+                     (equal (plist-get (etaf-telega-gui--info) :selected) 11))))
+             (etaf-telega-gui--action
               "search-server-chat"
               (lambda (_)
                 (etaf-telega-search)
