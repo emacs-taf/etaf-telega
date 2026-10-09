@@ -466,12 +466,27 @@ While the message search is open the movement walks its results."
     (etaf-telega-show-message id)))
 
 (defun etaf-telega-jump-pinned ()
-  "Jump to the open conversation's pinned message (M-g p)."
+  "Jump to the open conversation's pinned message (M-g p).
+The conversation list's pinned id is only as fresh as the last load, so the
+message is looked up through the backend before reporting that nothing is
+pinned."
   (interactive)
-  (let* ((chat (etaf-telega-model-chat (etaf-telega--model)))
-         (id (and chat (plist-get chat :pinned-id))))
-    (unless id (user-error "这个对话没有置顶消息"))
-    (etaf-telega-show-message id)))
+  (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model)))
+    (unless chat (user-error "先打开一个对话"))
+    (etaf-telega-model-set-status model "正在查找置顶消息…")
+    (etaf-telega-backend-pinned-message
+     etaf-telega--backend (plist-get chat :id)
+     (lambda (id)
+       (when (eq model etaf-telega--model)
+         (condition-case error
+             (etaf-batch
+               (etaf-telega-model-set-status model "就绪")
+               (if id
+                   (etaf-telega-show-message id)
+                 (message "这个对话没有置顶消息")))
+           ((error quit)
+            (etaf-telega--report-callback-failure error))))))))
 
 (defun etaf-telega-jump-date (date)
   "Jump to the message nearest before DATE, a timestamp (M-g d).

@@ -512,6 +512,39 @@ fake backend's send responder."
       (etaf-telega-jump-date (float-time (date-to-time "2026-10-04 10:00")))
       (should (equal (etaf-telega-test--info :selected) 12)))))
 
+(ert-deftest etaf-telega-tests-pinned-jump-follows-the-backend-over-the-cache ()
+  "M-g p asks the backend, so pins made after loading still jump."
+  (let* ((histories
+          (etaf-telega-test--histories
+           (list 1
+                 (list :id 13 :sender "Alice" :time "09:00" :date "2026-10-05"
+                       :text "今天")
+                 (list :id 12 :outgoing t :sender "我" :time "10:00" :date "2026-10-04"
+                       :text "在的"))))
+         (loaded (list :id 1 :title "Alice" :unread 0 :preview "在的"
+                       :kind 'private :time "10:01" :pinned-id 12))
+         (backend (etaf-telega-backend-fake-create
+                   :chats (list loaded) :histories histories)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      ;; A pin made after the list loaded: the backend knows, the cache does not.
+      (setf (etaf-telega-backend-fake-chats backend)
+            (list (plist-put (copy-sequence loaded) :pinned-id 13)))
+      (etaf-telega-jump-pinned)
+      (should (equal (etaf-telega-test--info :selected) 13))
+      ;; The conversation was unpinned after loading: the cache still shows a
+      ;; pinned message, the backend does not, and no message is selected.
+      (setf (etaf-telega-backend-fake-chats backend)
+            (list (cl-remove :pinned-id (copy-sequence loaded))))
+      (let ((said nil)
+            (selected (etaf-telega-test--info :selected)))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (setq said (apply #'format format args)))))
+          (etaf-telega-jump-pinned))
+        (should (equal said "这个对话没有置顶消息"))
+        (should (equal (etaf-telega-test--info :selected) selected))))))
+
 (ert-deftest etaf-telega-tests-next-unread-chat-moves-to-the-unread-one ()
   "M-g u on the list selects the next conversation with unread messages."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

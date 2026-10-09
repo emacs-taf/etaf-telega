@@ -151,6 +151,11 @@
    "purpose": "Quoted, pinned and dated jumps select the right message."
   },
   {
+   "name": "etaf-telega-tests-pinned-jump-follows-the-backend-over-the-cache",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "The pinned jump follows a pin or unpin made after the conversation loaded."
+  },
+  {
    "name": "etaf-telega-tests-next-unread-chat-moves-to-the-unread-one",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "M-g u on the list selects the next conversation with unread messages."

@@ -250,6 +250,11 @@
 ;; Function: etaf-telega-backend-search-messages (backend query callback)
 ;; Search the selected chat's full history for QUERY, including messages the
 ;; client has not loaded; CALLBACK receives message projections, newest first.
+;; Function: etaf-telega-backend-pinned-message (backend chat-id callback)
+;; Report CHAT-ID's newest pinned message id through CALLBACK, which receives
+;; the id or nil when nothing is pinned.  The loaded conversation keeps the
+;; pinned id it had when it was read, so pins made during the session are
+;; only visible through this lookup.
 ;; Function: etaf-telega-backend-send-file (backend chat-id kind path caption options)
 ;; Send the file at PATH as KIND (`photo', `video', `voice' or `document')
 ;; with CAPTION and OPTIONS; progress arrives through `:upload' and the

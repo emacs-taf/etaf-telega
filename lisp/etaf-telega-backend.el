@@ -130,6 +130,13 @@ server-side search, not the client's local substring filter.")
 CALLBACK receives message projections, newest first, including messages the
 client has not loaded; QUERY matching is the backend's search.")
 
+(cl-defgeneric etaf-telega-backend-pinned-message (backend chat-id callback)
+  "Report CHAT-ID's newest pinned message id through CALLBACK.
+CALLBACK receives the message id, or nil when the conversation has nothing
+pinned.  A conversation's cached data does not follow pins made while a
+session is open, so the pinned jump asks the backend for the message each
+time instead of trusting the cache.")
+
 (cl-defgeneric etaf-telega-backend-send-file (backend chat-id kind path caption options)
   "Send the file at PATH to CHAT-ID through BACKEND as KIND.
 KIND is `photo', `video', `voice' or `document'; CAPTION is the text shown
@@ -377,6 +384,15 @@ popovers' completion sources."
                      (string-search needle
                                      (downcase (or (plist-get message :text) "")))))
                messages)))))
+
+(cl-defmethod etaf-telega-backend-pinned-message ((backend etaf-telega-backend-fake)
+                                                  chat-id callback)
+  "Report the pinned id BACKEND stores for CHAT-ID."
+  (let ((chat (cl-find chat-id (append (etaf-telega-backend-fake-chats backend)
+                                       (etaf-telega-backend-fake-dormant backend))
+                       :key (lambda (item) (plist-get item :id))
+                       :test #'equal)))
+    (funcall callback (plist-get chat :pinned-id))))
 
 (cl-defmethod etaf-telega-backend-send-file ((backend etaf-telega-backend-fake)
                                              _chat-id kind path caption options)
@@ -1200,6 +1216,24 @@ draft normally; the failure only reaches the status line."
                                (etaf-telega-backend-telega--project-message
                                 backend message))
                              (append (plist-get reply :messages) nil))))))))))
+
+(cl-defmethod etaf-telega-backend-pinned-message ((backend etaf-telega-backend-telega)
+                                                  chat-id callback)
+  "Report CHAT-ID's newest pinned message id from Telega's server data.
+The pinned filter answers with an empty list when nothing is pinned, so the
+callback runs either way."
+  (if-let* ((chat (telega-chat-get chat-id)))
+      (telega--searchChatMessages
+       chat (list :@type "searchMessagesFilterPinned") 0 0
+       :query nil :limit 1
+       :callback
+       (lambda (reply)
+         (etaf-telega-backend-telega--guard
+          backend "置顶消息"
+          (lambda ()
+            (funcall callback
+                     (plist-get (car (append (plist-get reply :messages) nil)) :id))))))
+    (funcall callback nil)))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)
