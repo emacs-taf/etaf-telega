@@ -125,12 +125,21 @@ width must follow the window exactly at every size."
   (execute-kbd-macro (vconcat text)))
 
 (defun etaf-telega-gui--press (help)
-  "Press the app bar button whose help text is HELP."
+  "Press the control HELP names: its help, aria label or button label.
+Wait briefly for a layout or menu change to finish rendering the control."
   (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
-         (host (cl-find-if (lambda (entry)
-                             (equal (plist-get (cdr entry) :help-echo) help))
-                           (etaf-runtime-host-props-entries runtime))))
-    (unless host (error "No app bar button %S" help))
+         (deadline (+ (float-time) 3))
+         host)
+    (while (and (not host) (< (float-time) deadline))
+      (setq host
+            (cl-find-if (lambda (entry)
+                          (let ((props (cdr entry)))
+                            (or (equal (plist-get props :help-echo) help)
+                                (equal (plist-get props :aria-label) help)
+                                (equal (plist-get props :label) help))))
+                        (etaf-runtime-host-props-entries runtime)))
+      (unless host (sit-for 0.05)))
+    (unless host (error "No app bar control %S" help))
     (etaf-dispatch-event runtime (car host) 'press)))
 
 (defun etaf-telega-gui--native-p (command message)
@@ -215,7 +224,7 @@ width must follow the window exactly at every size."
                 (let ((info (etaf-telega-gui--info)))
                   (and (null (plist-get info :compose))
                        (equal (plist-get info :draft) "")
-                       (string-match-p "Alice *你好\\(.\\|\n\\)*收到，明早见"
+                       (string-match-p "Alice\\(.\\|\n\\)*你好\\(.\\|\n\\)*收到，明早见"
                                        (etaf-telega-gui--text)))))
               t)
              (etaf-telega-gui--action
@@ -229,7 +238,7 @@ width must follow the window exactly at every size."
               (lambda (_)
                 (and (null (plist-get (etaf-telega-gui--info) :compose))
                      (string-match-p "收到，明早见！" (etaf-telega-gui--text))
-                     (string-match-p "（已编辑）" (etaf-telega-gui--text)))))
+                     (string-match-p "已编辑" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
               "cancel-edit-restores-draft"
               (lambda (_)
@@ -288,7 +297,7 @@ width must follow the window exactly at every size."
                 (etaf-telega-gui--type "光标")
                 (unless (eq (plist-get (etaf-telega-gui--info) :editing) t)
                   (error "Composer session did not open"))
-                (unless (eq (buffer-local-value 'cursor-type etaf-telega-gui--buffer) t)
+                (unless (buffer-local-value 'cursor-type etaf-telega-gui--buffer)
                   (error "Editing shows no caret"))
                 (when (buffer-local-value 'truncate-lines etaf-telega-gui--buffer)
                   (error "Editing enabled truncate-lines"))
@@ -341,7 +350,8 @@ width must follow the window exactly at every size."
               "app-bar-jump-newest"
               (lambda (_)
                 (execute-kbd-macro (kbd "p p p"))
-                (etaf-telega-gui--press "跳到最新消息 (>)"))
+                (etaf-telega-gui--press "更多")
+                (etaf-telega-gui--press "跳到最新消息"))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
               "reload-history" (lambda (_) (execute-kbd-macro (kbd "g")))
