@@ -96,6 +96,31 @@ fake backend's send responder."
     (etaf-telega-select-filter 'main)
     (should (string-search "每日新闻" (etaf-telega-test--text)))))
 
+(ert-deftest etaf-telega-tests-filter-keys-cycle ()
+  "The [ and ] keys walk the list's filter tabs and narrow the list."
+  (let ((backend (etaf-telega-backend-fake-create
+                  :chats (list (list :id 1 :title "Alice" :unread 2 :mention 1
+                                     :preview "在的" :kind 'private :time "10:01")
+                               (list :id 2 :title "工作群" :unread 0 :online t
+                                     :preview "周报" :kind 'group :time "09:30")))))
+    (etaf-telega-test--with-client buffer backend
+      (should (eq (etaf-telega-test--info :filter) 'main))
+      (should (string-search "Alice" (etaf-telega-test--text)))
+      (etaf-telega-test--keys "]")
+      (should (eq (etaf-telega-test--info :filter) 'important))
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "Alice" text))
+        (should-not (string-search "工作群" text)))
+      (etaf-telega-test--keys "]")
+      (should (eq (etaf-telega-test--info :filter) 'online))
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "工作群" text))
+        (should-not (string-search "Alice" text)))
+      (etaf-telega-test--keys "[")
+      (should (eq (etaf-telega-test--info :filter) 'important))
+      (etaf-telega-test--keys "[")
+      (should (eq (etaf-telega-test--info :filter) 'main)))))
+
 (ert-deftest etaf-telega-tests-list-keys-move-and-open ()
   "n and p walk the list and RET opens the conversation under point."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

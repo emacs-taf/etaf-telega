@@ -26,6 +26,11 @@
    "purpose": "A filter tab narrows the list and the main tab restores it."
   },
   {
+   "name": "etaf-telega-tests-filter-keys-cycle",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "[ and ] walk the list's filter tabs and narrow the visible conversations."
+  },
+  {
    "name": "etaf-telega-tests-list-keys-move-and-open",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "n and p walk the list and RET opens the conversation under point."

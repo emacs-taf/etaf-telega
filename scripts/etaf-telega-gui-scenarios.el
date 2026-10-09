@@ -186,6 +186,17 @@ Wait briefly for a layout or menu change to finish rendering the control."
                                (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
               t)
              (etaf-telega-gui--action
+              "filter-key-next" (lambda (_) (execute-kbd-macro (kbd "] ] ]")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :filter) 'groups)
+                     (string-match-p "工作群" (etaf-telega-gui--text))
+                     (not (string-match-p "每日新闻" (etaf-telega-gui--text))))))
+             (etaf-telega-gui--action
+              "filter-key-previous" (lambda (_) (execute-kbd-macro (kbd "[ [ [")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :filter) 'main)
+                     (string-match-p "Alice" (etaf-telega-gui--text)))))
+             (etaf-telega-gui--action
               "filter-groups" (lambda (_) (etaf-telega-select-filter 'groups))
               (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :filter) 'groups)
                                (string-match-p "工作群" (etaf-telega-gui--text))

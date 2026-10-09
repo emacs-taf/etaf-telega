@@ -42,8 +42,12 @@
 ;; Stop observing the backend, release the runtime and kill the client buffer.
 ;;
 ;; Function: etaf-telega-select-filter (key)
-;; Show the conversations of filter KEY (`main', `groups', `channels',
-;; `archived'); the filter tabs call it.
+;; Show the conversations of filter KEY (`main', `important', `online',
+;; `groups', `channels', `archived'); the filter tabs call it.
+;; Function: etaf-telega-next-filter ()
+;; Show the next conversation filter tab (] on the list); the ends hold.
+;; Function: etaf-telega-previous-filter ()
+;; Show the previous conversation filter tab ([ on the list); the ends hold.
 ;; Function: etaf-telega-next-chat ()
 ;; Move point to the next conversation in the list (n).
 ;; Function: etaf-telega-previous-chat ()

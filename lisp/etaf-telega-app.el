@@ -420,6 +420,8 @@ Each command operates on the message under point.")
   (let ((map (make-sparse-keymap)))
     (etaf-telega--native-map etaf-telega-root-native-keys map)
     (dolist (pair '(("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
+                    ("[" . etaf-telega-previous-filter)
+                    ("]" . etaf-telega-next-filter)
                     ("RET" . etaf-telega-open-chat)
                     ("/" . etaf-telega-search) ("s" . etaf-telega-search)
                     ("J" . telega-chat-join-by-link)
@@ -604,6 +606,26 @@ Commands that remount or close the client run after the menu's own event."
                                   nil t))))
   (etaf-telega-model-set-filter (etaf-telega--model) key))
 
+(defun etaf-telega--step-filter (delta)
+  "Show the filter DELTA tabs away, staying at the strip's ends."
+  (let* ((keys (mapcar #'car etaf-telega-filters))
+         (index (or (cl-position (etaf-telega-model-filter (etaf-telega--model))
+                                 keys)
+                    0))
+         (next (+ index delta)))
+    (when (< -1 next (length keys))
+      (etaf-telega-select-filter (nth next keys)))))
+
+(defun etaf-telega-next-filter ()
+  "Show the next conversation filter (] on the list); the ends hold."
+  (interactive)
+  (etaf-telega--step-filter 1))
+
+(defun etaf-telega-previous-filter ()
+  "Show the previous conversation filter ([ on the list); the ends hold."
+  (interactive)
+  (etaf-telega--step-filter -1))
+
 (defun etaf-telega-native (command)
   "Run Telega's COMMAND on the conversation or message under point.
 Called from a key of `etaf-telega-root-native-keys' or
@@ -733,11 +755,7 @@ a swipe shows the neighbouring filter tab."
     (unless (etaf-telega-model-viewer model)
       (if (eq (etaf-telega-model-screen model) 'chat)
           (when (eq direction 'right) (etaf-telega-back))
-        (let* ((keys (mapcar #'car etaf-telega-filters))
-               (index (or (cl-position (etaf-telega-model-filter model) keys) 0))
-               (next (+ index (if (eq direction 'left) 1 -1))))
-          (when (< -1 next (length keys))
-            (etaf-telega-select-filter (nth next keys))))))))
+        (etaf-telega--step-filter (if (eq direction 'left) 1 -1))))))
 
 (defun etaf-telega-activate ()
   "Open the media of the message at point, or start typing elsewhere."
