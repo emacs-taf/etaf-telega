@@ -68,8 +68,9 @@
 ;; Show the list search and begin typing its query (/ or s on the list, or a
 ;; click on the header's search field).  Kind tabs narrow the matches; before
 ;; anything is typed the search offers frequent contacts and the recently
-;; opened results.  RET opens the first match, and opening any result records
-;; it as recent and leaves search.
+;; opened results, and a typed query also searches the backend server-side,
+;; so conversations the list has not loaded appear.  RET opens the first
+;; match, and opening any result records it as recent and leaves search.
 ;; Function: etaf-telega-search-exit ()
 ;; Leave the list search and clear its query (the header's back button, or
 ;; cancelling the field).
@@ -222,6 +223,9 @@
 ;; callback.
 ;; Function: etaf-telega-backend-save-draft (backend chat-id text)
 ;; Store TEXT as CHAT-ID's draft; an empty TEXT clears it.
+;; Function: etaf-telega-backend-search-chats (backend query callback)
+;; Search the account for conversations matching QUERY, including ones the
+;; list has not loaded; CALLBACK receives chat projections.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
 ;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.
@@ -246,11 +250,13 @@
 ;; Make conversation ID available to open; a backend with a private-chat
 ;; model, such as Telega, creates a contact's missing chat.
 ;;
-;; Function: etaf-telega-backend-fake-create (&key chats histories responder)
+;; Function: etaf-telega-backend-fake-create (&key chats histories responder dormant)
 ;; Return an offline backend seeded with CHATS and HISTORIES (a hash table
-;; from chat id to message plists, newest first).  RESPONDER, when non-nil,
-;; is called with (BACKEND TEXT) after each send so a caller can acknowledge
-;; through `etaf-telega-backend-fake-complete'.
+;; from chat id to message plists, newest first).  DORMANT holds conversations
+;; the initial list does not carry; searching finds them like a server-side
+;; search does.  RESPONDER, when non-nil, is called with (BACKEND TEXT) after
+;; each send so a caller can acknowledge through
+;; `etaf-telega-backend-fake-complete'.
 ;; Function: etaf-telega-backend-fake-sent (backend)
 ;; Return, newest first, the texts BACKEND accepted but has not confirmed.
 ;; Function: etaf-telega-backend-fake-sends (backend)

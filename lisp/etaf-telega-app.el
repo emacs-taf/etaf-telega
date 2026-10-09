@@ -658,6 +658,9 @@ Each command operates on the message under point.")
                          (user-error "先把光标移到一个对话上"))))
   (let* ((model (etaf-telega--model))
          (chat (or (etaf-telega-model-chat-by-id model id)
+                   (cl-find id (etaf-telega-model-search-results model)
+                            :key (lambda (item) (plist-get item :id))
+                            :test #'equal)
                    (user-error "没有这个对话：%s" id)))
          (previous (etaf-telega-model-chat model))
          (searching (etaf-telega-model-searching model)))
@@ -733,13 +736,32 @@ On a compact chat screen the client first returns to the list."
   "Leave the list search, clearing its query, and show the list again."
   (interactive)
   (etaf-telega--end-editing)
-  (etaf-telega-model-set-search (etaf-telega--model) nil))
+  (etaf-telega-model-set-search (etaf-telega--model) nil)
+  (etaf-telega-model-set-search-results (etaf-telega--model) nil))
 
 (defun etaf-telega--search-focused ()
   "Show the list search when its field begins editing."
   (let ((model (etaf-telega--model)))
     (unless (etaf-telega-model-searching model)
       (etaf-telega-model-set-search model t (etaf-telega-model-search model)))))
+
+(defun etaf-telega--search-changed (query)
+  "Track QUERY and ask the backend for conversations matching it.
+The local substring filter already shows loaded matches; the backend search
+fills in conversations the list has not loaded.  A stale answer, one whose
+query is no longer current, is dropped."
+  (let ((model (etaf-telega--model)))
+    (etaf-batch
+      (etaf-telega-model-set-search model t query)
+      (etaf-telega-model-set-search-results model nil))
+    (unless (string-empty-p (string-trim query))
+      (let ((token query))
+        (etaf-telega-backend-search-chats
+         etaf-telega--backend query
+         (lambda (chats)
+           (when (and (eq model etaf-telega--model)
+                      (equal token (etaf-telega-model-search model)))
+             (etaf-telega-model-set-search-results model chats))))))))
 
 (defun etaf-telega--search-submit (_query)
   "Open the first conversation the list search shows."
@@ -749,7 +771,8 @@ On a compact chat screen the client first returns to the list."
 
 (defun etaf-telega--search-cancelled (_query)
   "Leave the list search after its field was cancelled."
-  (etaf-telega-model-set-search (etaf-telega--model) nil))
+  (etaf-telega-model-set-search (etaf-telega--model) nil)
+  (etaf-telega-model-set-search-results (etaf-telega--model) nil))
 
 (defun etaf-telega--search-kind-select (kind)
   "Narrow the list search to conversations of KIND."

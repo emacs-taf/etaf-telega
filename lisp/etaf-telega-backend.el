@@ -57,6 +57,8 @@
 ;;                                        `float-time'); arrives as `:jump'
 ;;   (save-draft BACKEND CHAT-ID TEXT)    store a conversation's draft;
 ;;                                        empty TEXT clears it
+;;   (search-chats BACKEND QUERY CALLBACK)  search the account for
+;;                                        conversations matching QUERY
 ;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
 ;;                                        replying, with send options
 ;;                                        (:silent :no-preview :at :markdown)
@@ -107,6 +109,12 @@ The message arrives through the `:jump' callback.")
 (cl-defgeneric etaf-telega-backend-save-draft (backend chat-id text)
   "Store TEXT as CHAT-ID's draft through BACKEND; an empty TEXT clears it.")
 
+(cl-defgeneric etaf-telega-backend-search-chats (backend query callback)
+  "Search BACKEND's account for conversations matching QUERY.
+CALLBACK receives a list of chat projections, including conversations the
+account has not loaded into the list yet.  QUERY matching is the backend's
+server-side search, not the client's local substring filter.")
+
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
 OPTIONS is a plist: `:silent' sends without a notification, `:no-preview'
@@ -146,16 +154,19 @@ with a private-chat model, such as Telega, creates the missing chat.")
 
 (cl-defstruct etaf-telega-backend-fake
   chats histories sent responder callbacks chat-id replies next-sent-id natives
-  sends drafts)
+  sends drafts dormant)
 
-(cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
+(cl-defun etaf-telega-backend-fake-create (&key chats histories responder dormant)
   "Create a fake backend seeded with CHATS and HISTORIES.
 HISTORIES is a hash table from chat id to a list of message plists.  When
 RESPONDER is non-nil it is called with (BACKEND TEXT) after each send, so a
-test can acknowledge the message through `etaf-telega-backend-fake-complete'."
+test can acknowledge the message through `etaf-telega-backend-fake-complete'.
+DORMANT holds conversations the initial list does not carry; searching finds
+them like a server-side search does."
   (make-etaf-telega-backend-fake
    :chats chats :histories (or histories (make-hash-table :test #'equal))
-   :responder responder :sent nil :drafts (make-hash-table :test #'equal)))
+   :responder responder :sent nil :drafts (make-hash-table :test #'equal)
+   :dormant dormant))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-fake)
                                          callbacks)
@@ -298,6 +309,20 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                                  :chats)))
     (funcall report (copy-tree (etaf-telega-backend-fake-chats backend))))
   text)
+
+(cl-defmethod etaf-telega-backend-search-chats ((backend etaf-telega-backend-fake)
+                                                query callback)
+  "Report BACKEND's chats, and dormant ones, whose title matches QUERY."
+  (let ((needle (downcase (string-trim (or query "")))))
+    (funcall callback
+             (copy-tree
+              (cl-remove-if-not
+               (lambda (chat)
+                 (or (string-empty-p needle)
+                     (string-search needle (downcase (or (plist-get chat :title) "")))
+                     (string-search needle (downcase (or (plist-get chat :username) "")))))
+               (append (etaf-telega-backend-fake-chats backend)
+                       (etaf-telega-backend-fake-dormant backend)))))))
 
 (cl-defmethod etaf-telega-backend-stop ((_backend etaf-telega-backend-fake))
   "Fake backends own no connection.")
@@ -462,6 +487,8 @@ like a real sent message instead of colliding with existing ids."
                   (chat date &optional callback))
 (declare-function telega--setChatDraftMessage "telega-tdlib"
                   (chat &optional draft-msg))
+(declare-function telega--searchChatsOnServer "telega-tdlib"
+                  (query &optional limit callback))
 (defvar telega-chat-completing-sort-criteria)
 (defvar telega--info)
 (defvar telega--chats)
@@ -994,6 +1021,21 @@ draft normally; the failure only reaches the status line."
        chat (list :@type "draftMessage"
                   :content (list :@type "draftMessageContentText"
                                  :text (list :@type "formattedText" :text text)))))))
+
+(cl-defmethod etaf-telega-backend-search-chats ((backend etaf-telega-backend-telega)
+                                                query callback)
+  "Report Telega's server-side matches for QUERY."
+  (when (and query (not (string-empty-p (string-trim query))))
+    (telega--searchChatsOnServer
+     query 30
+     (lambda (chats)
+       (etaf-telega-backend-telega--guard
+        backend "搜索会话"
+        (lambda ()
+          (funcall callback
+                   (mapcar (lambda (chat)
+                             (etaf-telega-backend-telega--project-chat chat))
+                           (delq nil (append chats nil))))))))))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)

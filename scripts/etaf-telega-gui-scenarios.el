@@ -75,6 +75,8 @@
                               :kind 'group)
                         (list :id 3 :title "每日新闻" :unread 5 :preview "头条速览" :time "08:00"
                               :kind 'channel))
+           :dormant (list (list :id 4 :title "远端频道" :unread 0 :preview "订阅消息"
+                                :kind 'channel :time "08:00"))
            :histories histories :responder #'etaf-telega-gui--responder))))
 
 (defun etaf-telega-gui--main ()
@@ -523,6 +525,22 @@ Wait briefly for a layout or menu change to finish rendering the control."
                        (equal (gethash 1 drafts) "草稿A")
                        (equal (gethash 2 drafts) "草稿B"))))
               t)
+             (etaf-telega-gui--action
+              "search-server-chat"
+              (lambda (_)
+                (etaf-telega-search)
+                (etaf-telega-gui--type "远端"))
+              (lambda (_)
+                (and (string-match-p "远端频道" (etaf-telega-gui--text))
+                     (equal (plist-get (etaf-telega-gui--info) :search) "远端")))
+              t)
+             (etaf-telega-gui--action
+              "open-server-chat"
+              (lambda (_) (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (and (eq (plist-get (etaf-telega-gui--info) :screen) 'chat)
+                     (equal (plist-get (etaf-telega-gui--info) :chat) 4)
+                     (string-match-p "远端频道" (etaf-telega-gui--text)))))
              (etaf-telega-gui--action
               "chat-with-name"
               (lambda (_)

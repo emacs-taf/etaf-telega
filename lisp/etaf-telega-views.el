@@ -42,6 +42,7 @@
 (declare-function etaf-telega-search-exit "etaf-telega-app" ())
 (declare-function etaf-telega-search-clear-recent "etaf-telega-app" ())
 (declare-function etaf-telega--search-focused "etaf-telega-app" ())
+(declare-function etaf-telega--search-changed "etaf-telega-app" (query))
 (declare-function etaf-telega--search-submit "etaf-telega-app" (query))
 (declare-function etaf-telega--search-cancelled "etaf-telega-app" (query))
 (defvar etaf-telega--composer-keymap)
@@ -404,8 +405,9 @@ state instead of its prompt."
              (etaf-telega--bar-menu 'menu "菜单" (etaf-telega--list-menu-items me)
                                     #'etaf-telega--list-menu-select 'bottom-start))
            (etaf-view
-            (etaf-search-field :ref 'telega-search :bind (plist-get model :search)
+            (etaf-search-field :ref 'telega-search :value (plist-get model :search)
                                :placeholder (if ready "搜索" status) :icon t
+                               :on-change #'etaf-telega--search-changed
                                :on-focus #'etaf-telega--search-focused
                                :on-submit #'etaf-telega--search-submit
                                :on-cancel #'etaf-telega--search-cancelled)))
@@ -574,14 +576,26 @@ opened results before anything is typed; otherwise the active filter's."
     (if (etaf-value (plist-get model :searching))
         (let ((query (or (etaf-value (plist-get model :search)) ""))
               (kind (etaf-value (plist-get model :search-kind))))
-          (etaf-telega--search-chats
-           (if (string-empty-p (string-trim query))
+          (if (string-empty-p (string-trim query))
+              (etaf-telega--search-chats
                (delq nil (mapcar (lambda (id)
                                    (cl-find id chats :key (lambda (chat) (plist-get chat :id))
                                             :test #'equal))
                                  (etaf-value (plist-get model :recent))))
-             chats)
-           query kind))
+               query kind)
+            ;; Local matches stay instant; the backend's server-side results
+            ;; add conversations the list has not loaded.
+            (let* ((local (etaf-telega--search-chats chats query kind))
+                   (found (etaf-telega--search-chats
+                           (etaf-value (plist-get model :search-results))
+                           query kind)))
+              (append local
+                      (cl-remove-if
+                       (lambda (chat)
+                         (cl-find (plist-get chat :id) local
+                                  :key (lambda (item) (plist-get item :id))
+                                  :test #'equal))
+                       found)))))
       (etaf-telega--filter-chats chats (etaf-value (plist-get model :filter))))))
 
 (defun etaf-telega--frequent-chats (chats count)

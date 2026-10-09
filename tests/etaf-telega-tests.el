@@ -648,6 +648,23 @@ fake backend's send responder."
     (should-not (etaf-telega-test--info :search))
     (should (string-search "每日新闻" (etaf-telega-test--text)))))
 
+(ert-deftest etaf-telega-tests-search-finds-server-only-chats ()
+  "Typing in the list search finds conversations the list has not loaded."
+  (let ((backend (etaf-telega-backend-fake-create
+                  :chats (list (list :id 1 :title "Alice" :unread 0 :preview "在的"
+                                     :kind 'private :time "10:01"))
+                  :dormant (list (list :id 9 :title "远端频道" :unread 0 :preview "订阅"
+                                       :kind 'channel :time "08:00")))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-search)
+      (etaf-telega-test--keys "远端")
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "远端频道" text))
+        (should-not (string-search "Alice" text)))
+      (etaf-telega-test--keys "RET")
+      (should (equal (etaf-telega-test--info :chat) 9))
+      (should (string-search "远端频道" (etaf-telega-test--text))))))
+
 (ert-deftest etaf-telega-tests-chat-search-and-details-pane ()
   "/ in a chat narrows the history; C-c i shows and hides the details."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

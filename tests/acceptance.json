@@ -201,6 +201,11 @@
    "purpose": "List search filters conversations, opens the first match and lists it as recent until cleared."
   },
   {
+   "name": "etaf-telega-tests-search-finds-server-only-chats",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Typing in the list search finds conversations the list has not loaded."
+  },
+  {
    "name": "etaf-telega-tests-chat-search-and-details-pane",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Message search narrows the open history and the details pane toggles on demand."

@@ -43,6 +43,7 @@
         :search (etaf-ref "" :name 'etaf-telega-search)
         :searching (etaf-ref nil :name 'etaf-telega-searching)
         :search-kind (etaf-ref 'all :name 'etaf-telega-search-kind)
+        :search-results (etaf-ref nil :name 'etaf-telega-search-results)
         :recent (etaf-ref nil :name 'etaf-telega-recent)
         :chat-search (etaf-ref nil :name 'etaf-telega-chat-search)
         :details (etaf-ref nil :name 'etaf-telega-details)
@@ -276,6 +277,14 @@ Leaving search clears the query and the kind tab."
 (defun etaf-telega-model-set-search-kind (model kind)
   "Narrow MODEL's search results to chats of KIND, or `all'."
   (setf (etaf-value (plist-get model :search-kind)) kind))
+
+(defun etaf-telega-model-search-results (model)
+  "Return MODEL's backend-side search results."
+  (etaf-value (plist-get model :search-results)))
+
+(defun etaf-telega-model-set-search-results (model chats)
+  "Set MODEL's backend-side search results to CHATS."
+  (setf (etaf-value (plist-get model :search-results)) chats))
 
 (defun etaf-telega-model-recent (model)
   "Return MODEL's recently opened search result ids, newest first."
