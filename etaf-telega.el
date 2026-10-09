@@ -146,6 +146,19 @@
 ;; Replace the composer text with the previous sent text (M-p).
 ;; Function: etaf-telega-history-next ()
 ;; Replace the composer text with the next sent text (M-n).
+;; Function: etaf-telega-toggle-silent ()
+;; Send the next message without a notification (C-c C-s).
+;; Function: etaf-telega-toggle-link-preview ()
+;; Disable the link preview for the next message (C-c C-l).
+;; Function: etaf-telega-toggle-markdown ()
+;; Parse the next message as Markdown into formatted text (C-c C-m).
+;; Function: etaf-telega-schedule-send (time)
+;; Send the next message at TIME, a timestamp; an empty interactive answer
+;; clears the schedule (C-c C-t).
+;; Function: etaf-telega-clear-schedule ()
+;; Send the next message immediately, cancelling the schedule.
+;; Function: etaf-telega-clear-draft ()
+;; Discard the composer's text and leave the input (C-c C-d).
 ;; Function: etaf-telega-reply ()
 ;; Arm a reply to the message under point; the next send quotes it (r).
 ;; Function: etaf-telega-edit ()
@@ -206,8 +219,9 @@
 ;; Function: etaf-telega-backend-date-message (backend date)
 ;; Load the message at DATE, a `float-time'; it arrives through the `:jump'
 ;; callback.
-;; Function: etaf-telega-backend-send (backend text &optional reply-to)
-;; Send TEXT, replying to the message REPLY-TO when non-nil.
+;; Function: etaf-telega-backend-send (backend text &optional reply-to options)
+;; Send TEXT, replying to the message REPLY-TO when non-nil.  OPTIONS is a
+;; plist: :silent, :no-preview, :at (a timestamp) and :markdown.
 ;; Function: etaf-telega-backend-edit (backend message text)
 ;; Replace the text of MESSAGE.
 ;; Function: etaf-telega-backend-read (backend message-ids)
@@ -236,6 +250,9 @@
 ;; through `etaf-telega-backend-fake-complete'.
 ;; Function: etaf-telega-backend-fake-sent (backend)
 ;; Return, newest first, the texts BACKEND accepted but has not confirmed.
+;; Function: etaf-telega-backend-fake-sends (backend)
+;; Return, newest first, BACKEND's recorded sends as (:text :reply :options)
+;; plists.
 ;; Function: etaf-telega-backend-fake-replies (backend)
 ;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
 ;; Function: etaf-telega-backend-fake-natives (backend)

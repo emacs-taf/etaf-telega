@@ -71,6 +71,16 @@
    "purpose": "M-p and M-n recall the texts sent in the open conversation."
   },
   {
+   "name": "etaf-telega-tests-send-options-reach-the-backend",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Silent, preview, schedule and markdown options ride on the next send."
+  },
+  {
+   "name": "etaf-telega-tests-clear-draft-discards-the-composer",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "C-c C-d clears a draft and leaves the composer."
+  },
+  {
    "name": "etaf-telega-tests-draft-survives-until-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "A pending send keeps the draft and clears only after acceptance."

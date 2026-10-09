@@ -45,6 +45,11 @@
 (declare-function etaf-telega--search-submit "etaf-telega-app" (query))
 (declare-function etaf-telega--search-cancelled "etaf-telega-app" (query))
 (defvar etaf-telega--composer-keymap)
+(declare-function etaf-telega-model-send-options "etaf-telega-model" (model))
+(declare-function etaf-telega-toggle-silent "etaf-telega-app" ())
+(declare-function etaf-telega-toggle-link-preview "etaf-telega-app" ())
+(declare-function etaf-telega-toggle-markdown "etaf-telega-app" ())
+(declare-function etaf-telega-clear-schedule "etaf-telega-app" ())
 (declare-function etaf-telega--search-kind-select "etaf-telega-app" (kind))
 (declare-function etaf-telega-chat-search "etaf-telega-app" ())
 (declare-function etaf-telega-chat-search-exit "etaf-telega-app" ())
@@ -171,6 +176,41 @@ Pictographs are removed so the row keeps the canvas line height."
       ('edit (format "编辑：%s"
                      (etaf-telega--one-line (plist-get target :text) 40)))
       (_ nil))))
+
+(defun etaf-telega--send-chip (label action)
+  "Return a clickable LABEL chip running ACTION."
+  (etaf-node 'box (list :flex-shrink 0 :padding-inline '(ch 1)
+                        :color (etaf-telega-color :accent)
+                        :background-color (etaf-telega-color :surface-2)
+                        :pointer 'hand :help-echo label
+                        :role 'button :aria-label label :on-press action)
+             (list (etaf-node 'text nil (list label)))))
+
+(defun etaf-telega--send-options-strip (model)
+  "Return the pending send options as clickable chips, or nil.
+Each chip clears or toggles its option."
+  (let* ((options (etaf-telega-model-send-options model))
+         (chips (delq nil
+                      (list (when (plist-get options :silent)
+                              (etaf-telega--send-chip "静默"
+                                                      #'etaf-telega-toggle-silent))
+                            (when (plist-get options :no-preview)
+                              (etaf-telega--send-chip "不预览链接"
+                                                      #'etaf-telega-toggle-link-preview))
+                            (when (plist-get options :at)
+                              (etaf-telega--send-chip
+                               (format "定时 %s"
+                                       (format-time-string "%m-%d %H:%M"
+                                                           (plist-get options :at)))
+                               #'etaf-telega-clear-schedule))
+                            (when (plist-get options :markdown)
+                              (etaf-telega--send-chip "Markdown"
+                                                      #'etaf-telega-toggle-markdown))))))
+    (when chips
+      (etaf-node 'flex (list :flex-direction 'row :align-items 'center
+                             :column-gap '(ch 1) :width 'stretch
+                             :padding-bottom '(lh 1))
+                 chips))))
 
 (defun etaf-telega--group-digits (count)
   "Return natural number COUNT with thousands separated by commas."
@@ -1073,6 +1113,7 @@ until the reader scrolls away; reaching its top asks for older messages."
                   (text :color (etaf-telega-color :accent) (expr label))
                   (expr (etaf-telega--spacer))
                   (text :color (etaf-telega-color :muted) "C-c C-k 取消")))))
+       (expr (etaf-telega--send-options-strip model))
        (flex :flex-direction 'row :align-items 'center :width 'stretch
              :column-gap '(ch 1)
          (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)

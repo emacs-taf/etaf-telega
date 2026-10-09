@@ -433,6 +433,40 @@ Wait briefly for a layout or menu change to finish rendering the control."
                   (and (equal (plist-get info :chat) 1)
                        (< 0 (plist-get info :messages))))))
              (etaf-telega-gui--action
+              "send-options"
+              (lambda (_)
+                (etaf-telega-toggle-silent)
+                (etaf-telega-toggle-link-preview)
+                (etaf-telega-toggle-markdown)
+                (etaf-telega-schedule-send
+                 (float-time (date-to-time "2030-01-02 03:04"))))
+              (lambda (_)
+                (let ((text (etaf-telega-gui--text)))
+                  (and (string-match-p "静默" text)
+                       (string-match-p "不预览链接" text)
+                       (string-match-p "Markdown" text)
+                       (string-match-p "定时 01-02 03:04" text))))
+              t)
+             (etaf-telega-gui--action
+              "send-options-message"
+              (lambda (_)
+                (etaf-telega-clear-draft)
+                (execute-kbd-macro (kbd "i"))
+                (etaf-telega-gui--type "带选项的消息")
+                (execute-kbd-macro (kbd "RET")))
+              (lambda (_)
+                (let* ((send (car (etaf-telega-backend-fake-sends
+                                   etaf-telega-gui--backend)))
+                       (options (plist-get send :options)))
+                  (and (equal (plist-get send :text) "带选项的消息")
+                       (equal (plist-get options :silent) t)
+                       (equal (plist-get options :no-preview) t)
+                       (equal (plist-get options :markdown) t)
+                       (equal (plist-get options :at)
+                              (float-time (date-to-time "2030-01-02 03:04")))
+                       (equal (plist-get (etaf-telega-gui--info) :draft) "")
+                       (not (string-match-p "静默" (etaf-telega-gui--text)))))))
+             (etaf-telega-gui--action
               "chat-with-name"
               (lambda (_)
                 (cl-letf (((symbol-function 'completing-read)

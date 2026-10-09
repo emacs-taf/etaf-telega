@@ -46,7 +46,11 @@
         :recent (etaf-ref nil :name 'etaf-telega-recent)
         :chat-search (etaf-ref nil :name 'etaf-telega-chat-search)
         :details (etaf-ref nil :name 'etaf-telega-details)
-        :list-width (etaf-ref nil :name 'etaf-telega-list-width)))
+        :list-width (etaf-ref nil :name 'etaf-telega-list-width)
+        :send-silent (etaf-ref nil :name 'etaf-telega-send-silent)
+        :send-no-preview (etaf-ref nil :name 'etaf-telega-send-no-preview)
+        :send-at (etaf-ref nil :name 'etaf-telega-send-at)
+        :send-markdown (etaf-ref nil :name 'etaf-telega-send-markdown)))
 
 (defun etaf-telega-model-screen (model)
   "Return MODEL's shown screen, `root' or `chat'."
@@ -306,6 +310,25 @@ Leaving search clears the query and the kind tab."
 (defun etaf-telega-model-set-list-width (model pixels)
   "Set MODEL's list pane width to PIXELS, or nil for the default."
   (setf (etaf-value (plist-get model :list-width)) pixels))
+
+(defun etaf-telega-model-send-options (model)
+  "Return MODEL's pending send options as a plist.
+Keys are `:silent', `:no-preview', `:at' (a timestamp) and `:markdown'."
+  (list :silent (etaf-value (plist-get model :send-silent))
+        :no-preview (etaf-value (plist-get model :send-no-preview))
+        :at (etaf-value (plist-get model :send-at))
+        :markdown (etaf-value (plist-get model :send-markdown))))
+
+(defun etaf-telega-model-set-send-option (model key value)
+  "Set MODEL's send option KEY to VALUE.
+KEY is `silent', `no-preview', `at' or `markdown'."
+  (let ((ref (pcase key
+               ('silent (plist-get model :send-silent))
+               ('no-preview (plist-get model :send-no-preview))
+               ('at (plist-get model :send-at))
+               ('markdown (plist-get model :send-markdown))
+               (_ (error "Unknown send option %S" key)))))
+    (setf (etaf-value ref) value)))
 
 (provide 'etaf-telega-model)
 ;;; etaf-telega-model.el ends here

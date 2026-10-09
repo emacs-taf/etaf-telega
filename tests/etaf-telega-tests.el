@@ -231,6 +231,42 @@ fake backend's send responder."
       (etaf-telega-test--keys "M-n")
       (should (equal (etaf-telega-test--info :draft) "")))))
 
+(ert-deftest etaf-telega-tests-send-options-reach-the-backend ()
+  "Silent, preview, schedule and markdown options ride on the next send."
+  (let* ((at (float-time (date-to-time "2030-01-02 03:04")))
+         (backend (etaf-telega-test--backend
+                   (lambda (fake text) (etaf-telega-backend-fake-complete fake text)))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-toggle-silent)
+      (etaf-telega-toggle-link-preview)
+      (etaf-telega-toggle-markdown)
+      (etaf-telega-schedule-send at)
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "静默" text))
+        (should (string-search "不预览链接" text))
+        (should (string-search "Markdown" text))
+        (should (string-search "定时 01-02 03:04" text)))
+      (etaf-telega-test--keys "i 消息 RET")
+      (let* ((send (car (etaf-telega-backend-fake-sends backend)))
+             (options (plist-get send :options)))
+        (should (equal (plist-get send :text) "消息"))
+        (should (equal (plist-get options :silent) t))
+        (should (equal (plist-get options :no-preview) t))
+        (should (equal (plist-get options :markdown) t))
+        (should (equal (plist-get options :at) at)))
+      (should-not (string-search "静默" (etaf-telega-test--text))))))
+
+(ert-deftest etaf-telega-tests-clear-draft-discards-the-composer ()
+  "C-c C-d clears a draft and leaves the composer."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "i 草稿")
+    (should (equal (etaf-telega-test--info :draft) "草稿"))
+    (etaf-telega-test--keys "C-c C-d")
+    (should (equal (etaf-telega-test--info :draft) ""))
+    (should-not (etaf-telega-test--info :editing))))
+
 (ert-deftest etaf-telega-tests-draft-survives-until-ack ()
   "A pending send keeps the draft and clears only after acceptance."
   (let ((backend (etaf-telega-test--backend)))

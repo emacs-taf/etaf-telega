@@ -620,6 +620,11 @@ Each command operates on the message under point.")
                     ("g" . etaf-telega-reload-chat) ("M-<" . etaf-telega-load-more)
                     ("/" . etaf-telega-chat-search)
                     ("C-c i" . etaf-telega-toggle-details)
+                    ("C-c C-s" . etaf-telega-toggle-silent)
+                    ("C-c C-l" . etaf-telega-toggle-link-preview)
+                    ("C-c C-m" . etaf-telega-toggle-markdown)
+                    ("C-c C-t" . etaf-telega-schedule-send)
+                    ("C-c C-d" . etaf-telega-clear-draft)
                     ("q" . etaf-telega-back) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
     (define-key map (kbd "M-g") etaf-telega-chat-fastnav-map)
@@ -990,8 +995,13 @@ a swipe shows the neighbouring filter tab."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "M-p") #'etaf-telega-history-previous)
     (define-key map (kbd "M-n") #'etaf-telega-history-next)
+    (define-key map (kbd "C-c C-s") #'etaf-telega-toggle-silent)
+    (define-key map (kbd "C-c C-l") #'etaf-telega-toggle-link-preview)
+    (define-key map (kbd "C-c C-m") #'etaf-telega-toggle-markdown)
+    (define-key map (kbd "C-c C-t") #'etaf-telega-schedule-send)
+    (define-key map (kbd "C-c C-d") #'etaf-telega-clear-draft)
     map)
-  "Composer keys that recall sent texts.")
+  "Composer keys: sent texts and send options.")
 
 (defun etaf-telega--reset-input-history ()
   "Stop browsing the open conversation's input history."
@@ -1050,6 +1060,65 @@ a swipe shows the neighbouring filter tab."
   "Replace the composer text with the next sent text (M-n)."
   (interactive)
   (etaf-telega--history-step -1))
+
+(defun etaf-telega-clear-draft ()
+  "Discard the composer's text and leave the input (C-c C-d)."
+  (interactive)
+  (let ((model (etaf-telega--model))
+        (runtime (etaf-telega--runtime etaf-telega--buffer)))
+    (when (etaf-text-input-active-p runtime)
+      (etaf-text-input-end 'blur))
+    (etaf-telega--reset-input-history)
+    (etaf-telega-model-set-draft model "")))
+
+(defun etaf-telega--toggle-send-option (key)
+  "Toggle the send option KEY for the next message."
+  (let* ((model (etaf-telega--model))
+         (options (etaf-telega-model-send-options model)))
+    (etaf-telega-model-set-send-option model key (not (plist-get options key)))))
+
+(defun etaf-telega-toggle-silent ()
+  "Send the next message without a notification (C-c C-s)."
+  (interactive)
+  (etaf-telega--toggle-send-option 'silent))
+
+(defun etaf-telega-toggle-link-preview ()
+  "Disable the link preview for the next message (C-c C-l)."
+  (interactive)
+  (etaf-telega--toggle-send-option 'no-preview))
+
+(defun etaf-telega-toggle-markdown ()
+  "Parse the next message as Markdown into formatted text (C-c C-m)."
+  (interactive)
+  (etaf-telega--toggle-send-option 'markdown))
+
+(defun etaf-telega-schedule-send (time)
+  "Send the next message at TIME, a timestamp; nil sends it now.
+Interactively read HH:MM or a full date; an empty answer clears the
+schedule."
+  (interactive (list (etaf-telega--read-schedule)))
+  (etaf-telega-model-set-send-option (etaf-telega--model) 'at time))
+
+(defun etaf-telega-clear-schedule ()
+  "Send the next message immediately, cancelling the schedule."
+  (interactive)
+  (etaf-telega-model-set-send-option (etaf-telega--model) 'at nil))
+
+(defun etaf-telega--read-schedule ()
+  "Read the timestamp the next message should be sent at, or nil.
+An empty answer clears the schedule; an HH:MM answer uses today, or
+tomorrow when that time has already passed."
+  (let ((text (string-trim
+               (read-string "定时发送（HH:MM 或 YYYY-MM-DD HH:MM，留空取消）："))))
+    (unless (string-empty-p text)
+      (let ((time (date-to-time
+                   (if (and (string-match-p ":" text)
+                            (not (string-match-p " " text)))
+                       (concat (format-time-string "%Y-%m-%d") " " text)
+                     text))))
+        (float-time (if (time-less-p time (current-time))
+                        (time-add time 86400)
+                      time))))))
 
 (defun etaf-telega-compose ()
   "Start typing in the composer."
@@ -1113,12 +1182,21 @@ stays until the backend accepts it, so a failure keeps the text for retry."
       (user-error "先选择一个对话"))
     (unless (string-empty-p (string-trim text))
       (etaf-telega--reset-input-history)
-      (pcase (plist-get compose :kind)
-        ('reply (etaf-telega-backend-send etaf-telega--backend text
-                                          (plist-get compose :target)))
-        ('edit (etaf-telega-backend-edit etaf-telega--backend
-                                         (plist-get compose :target) text))
-        (_ (etaf-telega-backend-send etaf-telega--backend text))))))
+      (let ((options (etaf-telega-model-send-options model)))
+        (pcase (plist-get compose :kind)
+          ('reply (etaf-telega-backend-send etaf-telega--backend text
+                                            (plist-get compose :target) options))
+          ('edit (etaf-telega-backend-edit etaf-telega--backend
+                                           (plist-get compose :target) text))
+          (_ (etaf-telega-backend-send etaf-telega--backend text nil options)))
+        (etaf-telega--reset-send-options model)))))
+
+(defun etaf-telega--reset-send-options (model)
+  "Clear MODEL's pending send options after a send."
+  (etaf-telega-model-set-send-option model 'silent nil)
+  (etaf-telega-model-set-send-option model 'no-preview nil)
+  (etaf-telega-model-set-send-option model 'at nil)
+  (etaf-telega-model-set-send-option model 'markdown nil))
 
 (defun etaf-telega--keep-draft (text)
   "Keep TEXT as the draft after leaving the composer.

@@ -55,7 +55,9 @@
 ;;                                        newest first; arrives as `:jump'
 ;;   (date-message BACKEND DATE)          load the message at DATE (a
 ;;                                        `float-time'); arrives as `:jump'
-;;   (send BACKEND TEXT &optional REPLY-TO)  send, optionally replying
+;;   (send BACKEND TEXT &optional REPLY-TO OPTIONS)  send, optionally
+;;                                        replying, with send options
+;;                                        (:silent :no-preview :at :markdown)
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
 ;;   (react BACKEND MESSAGE-ID KEY)       toggle reaction KEY (an emoji string)
@@ -100,8 +102,11 @@ The page arrives through the `:jump' callback, newest first.")
   "Load the message at DATE, a `float-time', in BACKEND's selected chat.
 The message arrives through the `:jump' callback.")
 
-(cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to)
-  "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.")
+(cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to options)
+  "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.
+OPTIONS is a plist: `:silent' sends without a notification, `:no-preview'
+disables the link preview, `:at' is a timestamp to send at, and `:markdown'
+asks the backend to parse TEXT as Markdown into formatted text.")
 
 (cl-defgeneric etaf-telega-backend-edit (backend message text)
   "Replace MESSAGE's text with TEXT through BACKEND.")
@@ -135,7 +140,8 @@ with a private-chat model, such as Telega, creates the missing chat.")
 ;;; Fake backend
 
 (cl-defstruct etaf-telega-backend-fake
-  chats histories sent responder callbacks chat-id replies next-sent-id natives)
+  chats histories sent responder callbacks chat-id replies next-sent-id natives
+  sends)
 
 (cl-defun etaf-telega-backend-fake-create (&key chats histories responder)
   "Create a fake backend seeded with CHATS and HISTORIES.
@@ -243,9 +249,11 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                                    :jump)))
       (funcall report (and found (copy-tree (list found)))))))
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake)
-                                        text &optional reply-to)
-  "Record TEXT and invoke BACKEND's responder."
+                                        text &optional reply-to options)
+  "Record TEXT and OPTIONS, then invoke BACKEND's responder."
   (push text (etaf-telega-backend-fake-sent backend))
+  (push (list :text text :reply (plist-get reply-to :id) :options options)
+        (etaf-telega-backend-fake-sends backend))
   (when reply-to
     (push (cons text (plist-get reply-to :id))
           (etaf-telega-backend-fake-replies backend)))
@@ -429,6 +437,7 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega-user-chat "telega-user" (user))
 (declare-function telega-user-me "telega-user" (&optional locally-p))
 (declare-function telega--createPrivateChat "telega-tdlib" (user &optional callback))
+(declare-function telega-markup-markdown2-fmt "telega-util" (str-or-fmt-txt))
 (declare-function telega--getChatMessageByDate "telega-tdlib"
                   (chat date &optional callback))
 (defvar telega-chat-completing-sort-criteria)
@@ -1085,24 +1094,40 @@ account and its database."
                 backend :error (error-message-string err)))))))
 
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-telega)
-                                        text &optional reply-to)
+                                        text &optional reply-to options)
   "Send TEXT to the selected Telega chat, replying to REPLY-TO.
-Telega confirms the message asynchronously through its message hook, so the
-draft stays until `etaf-telega-backend-telega--message' accepts it; immediate
-failures are reported without keeping a half-send."
+OPTIONS add a silent send, a disabled link preview, a scheduled date or
+Markdown parsing.  Telega confirms the message asynchronously through its
+message hook, so the draft stays until `etaf-telega-backend-telega--message'
+accepts it; immediate failures are reported without keeping a half-send."
   (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
-         (chat (and chat-id (telega-chat-get chat-id))))
+         (chat (and chat-id (telega-chat-get chat-id)))
+         (imc (list :@type "inputMessageText"
+                    :text (if (plist-get options :markdown)
+                              (telega-markup-markdown2-fmt text)
+                            (list :@type "formattedText" :text text))
+                    :link_preview_options
+                    (when (plist-get options :no-preview)
+                      (list :@type "linkPreviewOptions" :is_disabled t))))
+         (send-options (append (when (plist-get options :silent)
+                                 (list :disable_notification t))
+                               (when (plist-get options :at)
+                                 (list :scheduling_state
+                                       (list :@type "messageSchedulingStateSendAtDate"
+                                             :send_date (round (plist-get options :at)))))))
+         (send-options (when send-options
+                         (cons :@type (cons "messageSendOptions" send-options)))))
     (unless chat
       (error "没有选中的对话"))
     (push (list :text text :reply reply-to)
           (etaf-telega-backend-telega-pending backend))
     (condition-case err
         (telega--sendMessage
-         chat (list :@type "inputMessageText"
-                    :text (list :@type "formattedText" :text text))
+         chat imc
          (when reply-to
            (list :@type "inputMessageReplyToMessage"
-                 :message_id (plist-get reply-to :id) :quote nil)))
+                 :message_id (plist-get reply-to :id) :quote nil))
+         send-options)
       (error
        (setf (etaf-telega-backend-telega-pending backend)
              (cl-remove text (etaf-telega-backend-telega-pending backend)
