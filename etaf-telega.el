@@ -126,9 +126,10 @@
 ;; Function: etaf-telega-open-media (id)
 ;; Show message ID's photo, video or animation in the in-buffer viewer over
 ;; the conversation: its preview at once, then the full file with download
-;; progress; videos play with seeking.  In the viewer n and p page between
-;; the loaded media messages and q, or a click outside, closes it.  Other
-;; attachments, such as stickers, voice notes and files, open with Telega.
+;; progress; videos play with seeking and voice notes and audio files play
+;; through the same viewer.  In the viewer n and p page between the loaded
+;; media messages and q, or a click outside, closes it.  Other attachments,
+;; such as stickers and files, open with Telega.
 ;; Function: etaf-telega-close-media ()
 ;; Close the viewer and return to the conversation.
 ;; Function: etaf-telega-react (id key)

@@ -171,6 +171,11 @@
    "purpose": "A photo opens in the in-buffer viewer, pages between media messages and closes back to the chat."
   },
   {
+   "name": "etaf-telega-tests-viewer-plays-voice-messages",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "A voice message opens in the in-buffer viewer with its total time."
+  },
+  {
    "name": "etaf-telega-tests-react-toggles-a-visible-reaction",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Toggling a reaction shows the emoji on the message and toggling again removes it."

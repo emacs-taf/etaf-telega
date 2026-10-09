@@ -526,6 +526,21 @@ fake backend's send responder."
           (should (eq (etaf-telega-test--info :screen) 'chat)))
       (delete-file image))))
 
+(ert-deftest etaf-telega-tests-viewer-plays-voice-messages ()
+  "A voice message opens in the in-buffer viewer with its total time."
+  (let* ((histories (etaf-telega-test--histories
+                     (list 1 (list :id 11 :sender "Alice" :time "10:00" :text ""
+                                   :kind 'voice :duration 3
+                                   :media (list :full "/tmp/voice.ogg")))))
+         (backend (etaf-telega-test--backend nil histories)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-open-media 11)
+      (should (equal (etaf-telega-test--info :viewer) 11))
+      (should (string-search "0:03" (etaf-telega-test--text)))
+      (etaf-telega-close-media)
+      (should-not (etaf-telega-test--info :viewer)))))
+
 (ert-deftest etaf-telega-tests-react-toggles-a-visible-reaction ()
   "Reacting shows the emoji and its count; reacting again removes it."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

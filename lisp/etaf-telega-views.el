@@ -1267,7 +1267,7 @@ WIDTH fixes the pane beside the chat; without it the pane fills the window."
                  (and links (etaf-telega--details-section "链接" links))))))))))))
 
 (etaf-define-component etaf-telega-viewer (&key model)
-  "Show MODEL's open photo or video in the in-buffer media viewer."
+  "Show MODEL's open photo, video or audio in the in-buffer media viewer."
   :render
   (let ((viewer (etaf-value (plist-get model :viewer))))
     (etaf-node
@@ -1276,6 +1276,7 @@ WIDTH fixes the pane beside the chat; without it the pane fills the window."
            :kind (or (plist-get viewer :kind) 'image)
            :src (plist-get viewer :src)
            :source-size (plist-get viewer :size)
+           :duration (plist-get viewer :duration)
            :title (or (plist-get viewer :title) "")
            :subtitle (plist-get viewer :subtitle)
            :caption (plist-get viewer :caption)

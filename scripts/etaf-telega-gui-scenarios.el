@@ -29,6 +29,25 @@
            "<path d='M0 200 L110 90 L200 170 L250 130 L320 200 Z' fill='#2c4f72'/></svg>")
    'svg t))
 
+(defun etaf-telega-gui--silent-wav ()
+  "Write a one-second silent WAV and return its path."
+  (let* ((path (expand-file-name "etaf-telega-silent.wav" temporary-file-directory))
+         (rate 8000)
+         (data (make-string (* rate 2) 0))
+         (le16 (lambda (n) (unibyte-string (logand n 255) (logand (ash n -8) 255))))
+         (le32 (lambda (n) (unibyte-string (logand n 255) (logand (ash n -8) 255)
+                                           (logand (ash n -16) 255)
+                                           (logand (ash n -24) 255)))))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert "RIFF" (funcall le32 (+ 36 (length data))) "WAVE"
+              "fmt " (funcall le32 16) (funcall le16 1) (funcall le16 1)
+              (funcall le32 rate) (funcall le32 (* rate 2))
+              (funcall le16 2) (funcall le16 16)
+              "data" (funcall le32 (length data)) data)
+      (write-region (point-min) (point-max) path nil 'silent))
+    path))
+
 (defun etaf-telega-gui--backend-create ()
   "Return a fake backend with three chats, a short history and one photo."
   (let ((histories (make-hash-table :test #'equal)))
@@ -39,7 +58,10 @@
                      (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
                            :link (list :site "Example" :title "示例链接")
                            :reply (list :id 11 :sender "Alice" :kind 'text :text "你好"))
-                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好 @fixture"))
+                     (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好 @fixture")
+                     (list :id 10 :sender "Alice" :time "09:59" :date "2026-10-04"
+                           :kind 'voice :duration 3
+                           :media (list :full (etaf-telega-gui--silent-wav))))
              histories)
     (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :date "2026-10-04" :text "周报收到"))
              histories)
@@ -117,6 +139,8 @@ width must follow the window exactly at every size."
                       "composer lives inside the conversation screen"
                       (let ((info (etaf-telega-info)))
                         (or (not (eq (plist-get info :screen) 'chat))
+                            ;; A modal media viewer owns the commit while it is open.
+                            (plist-get info :viewer)
                             (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
                                    (bounds (and runtime
                                                 (etaf-host-ref-bounds runtime 'telega-composer))))
@@ -240,7 +264,7 @@ Wait briefly for a layout or menu change to finish rendering the control."
                   (call-interactively #'etaf-telega-jump-date)))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
              (etaf-telega-gui--action
-              "native-copy" (lambda (_) (execute-kbd-macro (kbd "p p c")))
+              "native-copy" (lambda (_) (execute-kbd-macro (kbd "> p p c")))
               (lambda (_) (etaf-telega-gui--native-p 'telega-msg-copy-dwim 11)))
              (etaf-telega-gui--action
               "reply" (lambda (_)
@@ -432,6 +456,22 @@ Wait briefly for a layout or menu change to finish rendering the control."
                 (let ((info (etaf-telega-gui--info)))
                   (and (equal (plist-get info :chat) 1)
                        (< 0 (plist-get info :messages))))))
+             (etaf-telega-gui--action
+              "open-voice-viewer"
+              (lambda (_)
+                (etaf-telega-open-media 10)
+                (etaf-telega-gui--press "Play / pause (Space)"))
+              (lambda (_)
+                (and (equal (plist-get (etaf-telega-gui--info) :viewer) 10)
+                     (string-match-p "0:00 / 0:03" (etaf-telega-gui--text))
+                     (get-process "etaf-ui-audio")))
+              t)
+             (etaf-telega-gui--action
+              "close-voice-viewer"
+              (lambda (_) (etaf-telega-close-media))
+              (lambda (_)
+                (and (not (plist-get (etaf-telega-gui--info) :viewer))
+                     (not (get-process "etaf-ui-audio")))))
              (etaf-telega-gui--action
               "send-options"
               (lambda (_)

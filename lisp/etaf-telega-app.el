@@ -868,14 +868,15 @@ Called from a key of `etaf-telega-root-native-keys' or
   (interactive)
   (telega-msg-open-content (telega-msg-at (point)) t))
 
-(defconst etaf-telega--viewable-kinds '(photo video animation sticker)
+(defconst etaf-telega--viewable-kinds '(photo video animation sticker voice audio)
   "Message kinds the in-buffer media viewer shows.")
 
 (defun etaf-telega--media-ids ()
   "Return the ids of the open chat's viewable messages, oldest first."
   (cl-loop for message in (etaf-telega-model-messages (etaf-telega--model))
            when (and (memq (plist-get message :kind) etaf-telega--viewable-kinds)
-                     (plist-get message :media))
+                     (or (plist-get message :media)
+                         (memq (plist-get message :kind) '(voice audio))))
            collect (plist-get message :id)))
 
 (defun etaf-telega--show-media (message &optional source progress)
@@ -886,14 +887,18 @@ and the download PROGRESS, a fraction, when known."
          (id (plist-get message :id))
          (media (plist-get message :media))
          (video (memq (plist-get message :kind) '(video animation)))
+         (audio (memq (plist-get message :kind) '(voice audio)))
          (ids (etaf-telega--media-ids))
          (index (cl-position id ids :test #'equal)))
     (etaf-telega-model-set-viewer
      model
      (list :id id
-           :kind (if (and video source) 'video 'image)
+           :kind (cond ((and video source) 'video)
+                       (audio 'audio)
+                       (t 'image))
            :src (or source (plist-get media :src))
            :full (and source t)
+           :duration (plist-get message :duration)
            :size (and (plist-get media :width) (plist-get media :height)
                       (cons (plist-get media :width) (plist-get media :height)))
            :title (etaf-telega--plain-text (or (plist-get message :sender) ""))
@@ -909,15 +914,17 @@ and the download PROGRESS, a fraction, when known."
            :next (and index (< index (1- (length ids))))))))
 
 (defun etaf-telega-open-media (id)
-  "Preview message ID's photo or play its video in the in-buffer viewer.
-Other attachments, such as files and voice notes, open through Telega."
+  "Preview message ID's photo, play its video or audio in the viewer.
+Voice notes and audio files play in the same in-buffer viewer; other
+attachments, such as files and stickers, open through Telega."
   (interactive (list (or (etaf-telega--row-at 'message)
                          (user-error "先把光标移到一条消息上"))))
   (let* ((model (etaf-telega--model))
          (message (or (etaf-telega-model-message-by-id model id)
                       (user-error "没有这条消息：%s" id))))
     (if (and (memq (plist-get message :kind) etaf-telega--viewable-kinds)
-             (plist-get message :media))
+             (or (plist-get message :media)
+                 (memq (plist-get message :kind) '(voice audio))))
         (progn
           (etaf-telega-model-set-selected model id)
           (etaf-telega--show-media message)
