@@ -66,6 +66,11 @@
    "purpose": "> shows the newest message from anywhere in the history."
   },
   {
+   "name": "etaf-telega-tests-composer-option-keys-reach-their-toggles",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Each composer option key toggles its own send option."
+  },
+  {
    "name": "etaf-telega-tests-composer-sends-and-clears-on-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Typing in the composer sends the text and clears it after acceptance."

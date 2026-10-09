@@ -1126,7 +1126,7 @@ history and closes the search."
     (define-key map (kbd "C-p") #'etaf-telega-popover-previous)
     (define-key map (kbd "TAB") #'etaf-telega-popover-select)
     (define-key map (kbd "C-c C-e") #'etaf-telega-open-emoji)
-    (define-key map (kbd "C-c C-S") #'etaf-telega-open-stickers)
+    (define-key map (kbd "C-c C-p") #'etaf-telega-open-stickers)
     (define-key map (kbd "C-g") #'etaf-telega--compose-cancel)
     (define-key map (kbd "<escape>") #'etaf-telega--compose-cancel)
     map)
@@ -1404,7 +1404,7 @@ just drops the update."
            etaf-telega--emoji-choices)))
 
 (defun etaf-telega-open-stickers (query)
-  "Show the sticker picker over the composer (C-c C-S).
+  "Show the sticker picker over the composer (C-c C-p).
 QUERY is an emoji or keyword; an empty one asks for trending stickers."
   (interactive (list (read-string "贴纸（表情或关键词，可留空）：")))
   (etaf-telega-compose)

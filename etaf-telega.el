@@ -173,7 +173,7 @@
 ;; Show the emoji picker over the composer (C-c C-e); RET inserts the
 ;; selected emoji at the end of the draft.
 ;; Function: etaf-telega-open-stickers (query)
-;; Show the sticker picker over the composer (C-c C-S); QUERY is an emoji or
+;; Show the sticker picker over the composer (C-c C-p); QUERY is an emoji or
 ;; keyword.  RET sends the selected sticker.
 ;; Function: etaf-telega-popover-next ()
 ;; Move the composer popover's selection down (C-n).

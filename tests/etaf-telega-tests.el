@@ -209,6 +209,19 @@ fake backend's send responder."
     (etaf-telega-test--keys ">")
     (should (equal (etaf-telega-test--info :selected) 12))))
 
+(ert-deftest etaf-telega-tests-composer-option-keys-reach-their-toggles ()
+  "The composer's option keys toggle silent, preview and markdown.
+These keys share the `C-c C-' prefix, so a new binding must not shadow an
+existing one."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (etaf-telega-test--keys "i C-c C-s")
+    (should (string-search "静默" (etaf-telega-test--text)))
+    (etaf-telega-test--keys "C-c C-l")
+    (should (string-search "不预览链接" (etaf-telega-test--text)))
+    (etaf-telega-test--keys "C-c C-m")
+    (should (string-search "Markdown" (etaf-telega-test--text)))))
+
 (ert-deftest etaf-telega-tests-composer-sends-and-clears-on-ack ()
   "Typing in the composer sends the text and clears it after acceptance."
   (let ((backend (etaf-telega-test--backend
