@@ -424,6 +424,7 @@ Each command operates on the message under point.")
     (dolist (pair '(("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
                     ("[" . etaf-telega-previous-filter)
                     ("]" . etaf-telega-next-filter)
+                    ("j" . etaf-telega-chat-with)
                     ("RET" . etaf-telega-open-chat)
                     ("/" . etaf-telega-search) ("s" . etaf-telega-search)
                     ("J" . telega-chat-join-by-link)
@@ -440,6 +441,7 @@ Each command operates on the message under point.")
     (dolist (pair '(("n" . etaf-telega-next-message)
                     ("p" . etaf-telega-previous-message)
                     ("i" . etaf-telega-compose) ("RET" . etaf-telega-activate)
+                    ("j" . etaf-telega-chat-with)
                     (">" . etaf-telega-jump-newest) ("M->" . etaf-telega-jump-newest)
                     ("+" . etaf-telega-react)
                     ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
@@ -498,6 +500,32 @@ Each command operates on the message under point.")
       (etaf-telega--show-screen 'chat))
     (etaf-telega-backend-select etaf-telega--backend id)
     id))
+
+(defun etaf-telega--await-chat (id)
+  "Wait briefly for the backend to list conversation ID."
+  (let ((deadline (+ (float-time) 2)))
+    (while (and (not (etaf-telega-model-chat-by-id (etaf-telega--model) id))
+                (< (float-time) deadline))
+      (sit-for 0.05))))
+
+(defun etaf-telega-chat-with (id)
+  "Open conversation ID, chosen by name when called interactively.
+The backend offers its known conversations and contacts.  A contact whose
+private chat is not loaded yet is created and opened once the refreshed
+list carries it."
+  (interactive
+   (let* ((candidates (etaf-telega-backend-chat-candidates etaf-telega--backend))
+          (choices (mapcar (lambda (item)
+                             (cons (etaf-telega--plain-text
+                                    (or (plist-get item :title) "?"))
+                                   (plist-get item :id)))
+                           candidates)))
+     (unless choices (user-error "没有可用的会话"))
+     (list (cdr (assoc-string (completing-read "会话：" choices nil t) choices)))))
+  (unless (etaf-telega-model-chat-by-id (etaf-telega--model) id)
+    (etaf-telega-backend-ensure-chat etaf-telega--backend id)
+    (etaf-telega--await-chat id))
+  (etaf-telega-open-chat id))
 
 ;;;; Search
 

@@ -62,6 +62,11 @@
 ;;   (native BACKEND COMMAND CHAT-ID &optional MESSAGE-ID)
 ;;                                        run the backend's own interactive
 ;;                                        COMMAND on that chat or message
+;;   (chat-candidates BACKEND)            conversations and contacts to
+;;                                        offer when opening a chat by name
+;;   (ensure-chat BACKEND ID)             make a conversation available to
+;;                                        open; a contact without a chat gets
+;;                                        its private chat created
 ;;
 ;; `native' is how the client reuses Telega's own commands (transient menus,
 ;; reactions, forwarding, chat operations) instead of reimplementing them.
@@ -100,6 +105,15 @@ CALLBACK receives (PROGRESS SOURCE); SOURCE is non-nil once local.")
 (cl-defgeneric etaf-telega-backend-native (backend command chat-id &optional message-id)
   "Run BACKEND's interactive COMMAND on CHAT-ID, or on its MESSAGE-ID.
 The command sees that chat or message as the one at point.")
+
+(cl-defgeneric etaf-telega-backend-chat-candidates (backend)
+  "Return conversations and contacts BACKEND offers by name.
+Each item is a plist with `:id' and `:title'.")
+
+(cl-defgeneric etaf-telega-backend-ensure-chat (backend id)
+  "Make conversation ID available to open through BACKEND.
+A backend whose account can already reach the id returns it; a backend
+with a private-chat model, such as Telega, creates the missing chat.")
 
 (cl-defgeneric etaf-telega-backend-stop (backend)
   "Release BACKEND's connection without touching Telega's account data.")
@@ -257,6 +271,16 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
         (etaf-telega-backend-fake-natives backend))
   command)
 
+(cl-defmethod etaf-telega-backend-chat-candidates ((backend etaf-telega-backend-fake))
+  "Return BACKEND's stored conversations as completable candidates."
+  (mapcar (lambda (chat)
+            (list :id (plist-get chat :id) :title (plist-get chat :title)))
+          (etaf-telega-backend-fake-chats backend)))
+
+(cl-defmethod etaf-telega-backend-ensure-chat ((_backend etaf-telega-backend-fake) id)
+  "Return ID; a fake conversation is always available."
+  id)
+
 (defun etaf-telega-backend-fake-message (backend id)
   "Return BACKEND's stored message with ID, or nil."
   (cl-find id (gethash (etaf-telega-backend-fake-chat-id backend)
@@ -350,6 +374,13 @@ like a real sent message instead of colliding with existing ids."
                   (msg tl-reaction-type &optional big-p update-recent-reactions-p))
 (declare-function telega--removeMessageReaction "telega-tdlib"
                   (msg tl-reaction-type &optional callback))
+(declare-function telega-sort-chats "telega-sort" (criteria chats))
+(declare-function telega-filter-chats "telega-filter" (chat-list &optional chat-temex))
+(declare-function telega-user-get "telega-user" (user-id &optional locally-p))
+(declare-function telega-user-chat "telega-user" (user))
+(declare-function telega--createPrivateChat "telega-tdlib" (user &optional callback))
+(defvar telega-chat-completing-sort-criteria)
+(defvar telega--info)
 (defvar telega--chats)
 (defvar telega--cached-messages)
 (defvar telega-ready-hook)
@@ -820,6 +851,32 @@ draft normally; the failure only reaches the status line."
          (lambda ()
            (etaf-telega-backend-telega--report
             backend :error (format "发送失败：%s" detail))))))))
+
+(cl-defmethod etaf-telega-backend-chat-candidates ((_backend etaf-telega-backend-telega))
+  "Return Telega's known chats and contacts in its completion order."
+  (let* ((chats (telega-sort-chats
+                 telega-chat-completing-sort-criteria
+                 (telega-filter-chats (hash-table-values telega--chats) 'is-known)))
+         (users (cl-remove-if-not
+                 (lambda (user)
+                   (and (plist-get user :is_contact)
+                        (not (memq (telega-user-chat user) chats))))
+                 (hash-table-values (alist-get 'user telega--info)))))
+    (append (mapcar (lambda (chat)
+                      (list :id (plist-get chat :id)
+                            :title (telega-chat-title chat)))
+                    chats)
+            (mapcar (lambda (user)
+                      (list :id (plist-get user :id)
+                            :title (telega-msg-sender-title user)))
+                    users))))
+
+(cl-defmethod etaf-telega-backend-ensure-chat ((_backend etaf-telega-backend-telega)
+                                               id)
+  "Return conversation ID, creating a contact's private chat when needed."
+  (or (telega-chat-get id 'offline)
+      (when-let* ((user (telega-user-get id)))
+        (telega--createPrivateChat user))))
 
 (cl-defmethod etaf-telega-backend-start ((backend etaf-telega-backend-telega)
                                          callbacks)

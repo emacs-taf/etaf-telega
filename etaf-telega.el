@@ -56,6 +56,9 @@
 ;; Replace the list with conversation ID: its newest history page above the
 ;; composer, with point in the composer.  Interactively ID is the
 ;; conversation under point (RET).
+;; Function: etaf-telega-chat-with (id)
+;; Open conversation ID; interactively choose by name from the backend's
+;; known conversations and contacts (j on either screen).
 ;; Function: etaf-telega-back ()
 ;; Leave the conversation for the list with that conversation under point
 ;; (q, or the back button of the app bar).
@@ -190,6 +193,12 @@
 ;; Function: etaf-telega-backend-native (backend command chat-id &optional message-id)
 ;; Run the backend's interactive COMMAND on CHAT-ID, or on its MESSAGE-ID, as
 ;; if that chat or message were at point.
+;; Function: etaf-telega-backend-chat-candidates (backend)
+;; Return the conversations and contacts the client offers by name, each a
+;; plist with :id and :title.
+;; Function: etaf-telega-backend-ensure-chat (backend id)
+;; Make conversation ID available to open; a backend with a private-chat
+;; model, such as Telega, creates a contact's missing chat.
 ;;
 ;; Function: etaf-telega-backend-fake-create (&key chats histories responder)
 ;; Return an offline backend seeded with CHATS and HISTORIES (a hash table

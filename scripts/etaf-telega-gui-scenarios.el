@@ -384,7 +384,18 @@ Wait briefly for a layout or menu change to finish rendering the control."
               (lambda (_)
                 (let ((info (etaf-telega-gui--info)))
                   (and (equal (plist-get info :chat) 1)
-                       (< 0 (plist-get info :messages)))))))
+                       (< 0 (plist-get info :messages))))))
+             (etaf-telega-gui--action
+              "chat-with-name"
+              (lambda (_)
+                (cl-letf (((symbol-function 'completing-read)
+                           (lambda (&rest _) "工作群")))
+                  (call-interactively #'etaf-telega-chat-with)))
+              (lambda (_)
+                (let ((info (etaf-telega-gui--info)))
+                  (and (eq (plist-get info :screen) 'chat)
+                       (equal (plist-get info :chat) 2)
+                       (string-match-p "工作群" (etaf-telega-gui--text)))))))
             (mapcar
              (lambda (size)
                (etaf-telega-gui--action

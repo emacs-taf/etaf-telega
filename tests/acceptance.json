@@ -36,6 +36,11 @@
    "purpose": "n and p walk the list and RET opens the conversation under point."
   },
   {
+   "name": "etaf-telega-tests-chat-with-opens-by-name",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Known conversations are offered by name and the chosen one opens."
+  },
+  {
    "name": "etaf-telega-tests-open-chat-shows-history-and-lands-on-composer",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Opening a chat replaces the list with its history, oldest first."

@@ -136,6 +136,18 @@ fake backend's send responder."
     (should (eq (etaf-telega-test--info :screen) 'chat))
     (should (equal (etaf-telega-test--info :chat) 2))))
 
+(ert-deftest etaf-telega-tests-chat-with-opens-by-name ()
+  "Known conversations are offered by name and the chosen one opens."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (should (equal (mapcar (lambda (item) (plist-get item :title))
+                             (etaf-telega-backend-chat-candidates backend))
+                     '("Alice" "工作群" "每日新闻")))
+      (etaf-telega-chat-with 3)
+      (should (eq (etaf-telega-test--info :screen) 'chat))
+      (should (equal (etaf-telega-test--info :chat) 3))
+      (should (string-search "每日新闻" (etaf-telega-test--text))))))
+
 (ert-deftest etaf-telega-tests-open-chat-shows-history-and-lands-on-composer ()
   "Opening a chat replaces the list with its history, oldest first."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
