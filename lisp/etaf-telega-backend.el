@@ -53,6 +53,8 @@
 ;;   (history BACKEND &key before limit)  load messages older than BEFORE
 ;;   (around BACKEND MESSAGE-ID &key limit)  load the page at MESSAGE-ID,
 ;;                                        newest first; arrives as `:jump'
+;;   (date-message BACKEND DATE)          load the message at DATE (a
+;;                                        `float-time'); arrives as `:jump'
 ;;   (send BACKEND TEXT &optional REPLY-TO)  send, optionally replying
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
@@ -93,6 +95,10 @@ BEFORE is the oldest loaded message id, or nil for the newest page.")
 (cl-defgeneric etaf-telega-backend-around (backend message-id &key limit)
   "Load the page at MESSAGE-ID in BACKEND's selected chat.
 The page arrives through the `:jump' callback, newest first.")
+
+(cl-defgeneric etaf-telega-backend-date-message (backend date)
+  "Load the message at DATE, a `float-time', in BACKEND's selected chat.
+The message arrives through the `:jump' callback.")
 
 (cl-defgeneric etaf-telega-backend-send (backend text &optional reply-to)
   "Send TEXT through BACKEND, replying to the message REPLY-TO when non-nil.")
@@ -218,6 +224,24 @@ test can acknowledge the message through `etaf-telega-backend-fake-complete'."
                (copy-tree (and start
                                (etaf-telega-backend-fake--page backend chat-id start)))))))
 
+(cl-defmethod etaf-telega-backend-date-message ((backend etaf-telega-backend-fake)
+                                                date)
+  "Report the stored message nearest before DATE in BACKEND's selected chat."
+  (let* ((chat-id (etaf-telega-backend-fake-chat-id backend))
+         (all (gethash chat-id (etaf-telega-backend-fake-histories backend)))
+         (found (cl-find-if
+                 (lambda (message)
+                   (let ((stamp (ignore-errors
+                                  (float-time
+                                   (date-to-time
+                                    (concat (or (plist-get message :date) "")
+                                            " "
+                                            (or (plist-get message :time) "00:00")))))))
+                     (and stamp (<= stamp date))))
+                 all)))
+    (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                   :jump)))
+      (funcall report (and found (copy-tree (list found)))))))
 (cl-defmethod etaf-telega-backend-send ((backend etaf-telega-backend-fake)
                                         text &optional reply-to)
   "Record TEXT and invoke BACKEND's responder."
@@ -404,6 +428,8 @@ like a real sent message instead of colliding with existing ids."
 (declare-function telega-user-get "telega-user" (user-id &optional locally-p))
 (declare-function telega-user-chat "telega-user" (user))
 (declare-function telega--createPrivateChat "telega-tdlib" (user &optional callback))
+(declare-function telega--getChatMessageByDate "telega-tdlib"
+                  (chat date &optional callback))
 (defvar telega-chat-completing-sort-criteria)
 (defvar telega--info)
 (defvar telega--chats)
@@ -1002,6 +1028,29 @@ account and its database."
                                      (etaf-telega-backend-telega--project-message
                                       backend message))
                                    (append (plist-get event :messages) nil)))))))))
+      (error (etaf-telega-backend-telega--report
+              backend :error (error-message-string err))))))
+
+(cl-defmethod etaf-telega-backend-date-message ((backend etaf-telega-backend-telega)
+                                                date)
+  "Load the message at DATE through Telega, newest first."
+  (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
+         (callbacks (etaf-telega-backend-telega-callbacks backend))
+         (chat (and chat-id (telega-chat-get chat-id))))
+    (condition-case err
+        (when chat
+          (telega--getChatMessageByDate
+           chat (round date)
+           (lambda (message)
+             (etaf-telega-backend-telega--guard
+              backend "跳到日期"
+              (lambda ()
+                (when-let* ((report (plist-get callbacks :jump)))
+                  (funcall report
+                           (delq nil
+                                 (list (when message
+                                         (etaf-telega-backend-telega--project-message
+                                          backend message)))))))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))))
 

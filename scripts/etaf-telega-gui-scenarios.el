@@ -37,7 +37,8 @@
                            :media (list :src (etaf-telega-gui--photo)
                                         :width 320 :height 200))
                      (list :id 12 :outgoing t :sender "我" :time "10:01" :date "2026-10-04" :text "在的"
-                           :link (list :site "Example" :title "示例链接"))
+                           :link (list :site "Example" :title "示例链接")
+                           :reply (list :id 11 :sender "Alice" :kind 'text :text "你好"))
                      (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-04" :text "你好"))
              histories)
     (puthash 2 (list (list :id 21 :sender "Bob" :time "09:30" :date "2026-10-04" :text "周报收到"))
@@ -45,7 +46,7 @@
     (setq etaf-telega-gui--backend
           (etaf-telega-backend-fake-create
            :chats (list (list :id 1 :title "Alice" :unread 2 :preview "晚上见" :time "10:02"
-                              :kind 'private :username "alice" :pinned t
+                              :kind 'private :username "alice" :pinned t :pinned-id 13
                               :description "GUI 验收用的假档案")
                         (list :id 2 :title "工作群" :unread 0 :preview "周报收到" :time "09:30"
                               :kind 'group)
@@ -222,7 +223,20 @@ Wait briefly for a layout or menu change to finish rendering the control."
               "jump-newest" (lambda (_) (execute-kbd-macro (kbd ">")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
-              "show-message" (lambda (_) (etaf-telega-show-message 11))
+              "jump-quote-click" (lambda (_) (etaf-telega-gui--press "跳到被引消息"))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
+             (etaf-telega-gui--action
+              "show-message" (lambda (_) (etaf-telega-show-message 12))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 12)))
+             (etaf-telega-gui--action
+              "jump-pinned-key" (lambda (_) (execute-kbd-macro (kbd "M-g p")))
+              (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
+             (etaf-telega-gui--action
+              "jump-date-key"
+              (lambda (_)
+                (cl-letf (((symbol-function 'read-string)
+                           (lambda (&rest _) "2026-10-04 10:00")))
+                  (call-interactively #'etaf-telega-jump-date)))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
              (etaf-telega-gui--action
               "native-copy" (lambda (_) (execute-kbd-macro (kbd "p p c")))

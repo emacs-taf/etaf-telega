@@ -332,6 +332,32 @@ fake backend's send responder."
       (should (equal (etaf-telega-test--info :selected) 11))
       (should (string-search "第11条" (etaf-telega-test--text))))))
 
+(ert-deftest etaf-telega-tests-jumps-reach-quoted-pinned-and-dated-messages ()
+  "Quoted, pinned and dated jumps select the right message."
+  (let* ((histories
+          (etaf-telega-test--histories
+           (list 1
+                 (list :id 13 :sender "Alice" :time "09:00" :date "2026-10-05"
+                       :text "今天")
+                 (list :id 12 :outgoing t :sender "我" :time "10:00" :date "2026-10-04"
+                       :text "在的"
+                       :reply (list :id 11 :sender "Alice" :kind 'text :text "你好"))
+                 (list :id 11 :sender "Alice" :time "10:00" :date "2026-10-03"
+                       :text "你好"))))
+         (backend (etaf-telega-backend-fake-create
+                   :chats (list (list :id 1 :title "Alice" :unread 0 :preview "在的"
+                                      :kind 'private :time "10:01" :pinned-id 13))
+                   :histories histories)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "p p")
+      (etaf-telega-jump-quote)
+      (should (equal (etaf-telega-test--info :selected) 11))
+      (etaf-telega-jump-pinned)
+      (should (equal (etaf-telega-test--info :selected) 13))
+      (etaf-telega-jump-date (float-time (date-to-time "2026-10-04 10:00")))
+      (should (equal (etaf-telega-test--info :selected) 12)))))
+
 (ert-deftest etaf-telega-tests-day-separators-label-each-date ()
   "Each new date opens with a day label; today reads as 今天."
   (let ((today (format-time-string "%Y-%m-%d")))

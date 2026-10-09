@@ -94,6 +94,14 @@
 ;; Function: etaf-telega-show-message (id)
 ;; Select the open chat's message ID; when it is not loaded, load its page
 ;; first and select it once the page arrives.
+;; Function: etaf-telega-jump-quote ()
+;; Jump to the message quoted by the message under point (M-g q, or a click
+;; on the quote).
+;; Function: etaf-telega-jump-pinned ()
+;; Jump to the open conversation's pinned message (M-g p).
+;; Function: etaf-telega-jump-date (date)
+;; Jump to the message nearest before DATE, a timestamp; interactively read
+;; a date like 2026-10-05 (M-g d).
 ;; Function: etaf-telega-chat-search ()
 ;; Search the open conversation's loaded messages (/ in a chat, or the chat
 ;; header's search button): a search field replaces the title and the
@@ -183,6 +191,9 @@
 ;; Function: etaf-telega-backend-around (backend message-id &key limit)
 ;; Load the page at MESSAGE-ID in the selected chat; the page arrives through
 ;; the `:jump' callback, newest first.
+;; Function: etaf-telega-backend-date-message (backend date)
+;; Load the message at DATE, a `float-time'; it arrives through the `:jump'
+;; callback.
 ;; Function: etaf-telega-backend-send (backend text &optional reply-to)
 ;; Send TEXT, replying to the message REPLY-TO when non-nil.
 ;; Function: etaf-telega-backend-edit (backend message text)

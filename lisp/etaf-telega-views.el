@@ -789,12 +789,21 @@ INSET is the image's (TOP . BOTTOM) pixel gap from adjacent text."
     ("🤔" . "🤔") ("💯" . "💯"))
   "Reactions offered by a message's add-reaction chip, as (KEY . LABEL).")
 
-(defun etaf-telega--message-quote (reply)
-  "Return the quote of REPLY: its sender over one line behind a colored bar."
+(defun etaf-telega--message-quote (reply &optional jump)
+  "Return the quote of REPLY: its sender over one line behind a colored bar.
+JUMP, when non-nil, runs when the quote is activated."
   (let ((color (etaf-telega-sender-color (plist-get reply :sender))))
-    (etaf-node 'flex (list :flex-direction 'column :min-width '(ch 0)
-                           :align-self 'stretch :padding-inline '(ch 1)
-                           :border-left (list '(px 3) 'solid color))
+    (etaf-node 'flex (append
+                      (list :flex-direction 'column :min-width '(ch 0)
+                            :align-self 'stretch :padding-inline '(ch 1)
+                            :border-left (list '(px 3) 'solid color))
+                      (when jump
+                        (list :role 'button :tab-index 0
+                              :help-echo "跳到被引消息"
+                              :aria-label "跳到被引消息"
+                              :hover-style
+                              (list :background-color (etaf-telega-color :surface-2))
+                              :on-press jump)))
                (list (etaf-node 'box (list :overflow 'hidden :wrap-mode 'none)
                                 (list (etaf-node 'text (list :font-weight 'bold :color color)
                                                  (list (etaf-telega--plain-text
@@ -867,7 +876,11 @@ part keeps the bubble's inline padding."
                                                                (etaf-telega-color :accent)
                                                              (etaf-telega-sender-color sender)))
                                               (list (etaf-telega--plain-text sender))))))))
-     (when reply (list (funcall pad (etaf-telega--message-quote reply))))
+     (when reply
+       (list (funcall pad
+                      (etaf-telega--message-quote
+                       reply
+                       (lambda () (etaf-telega-show-message (plist-get reply :id)))))))
      (delq nil (list (etaf-telega--media-view
                       message (cons (if (or head reply) 6 0) 6))))
      (mapcar pad (delq nil (list (etaf-telega--media-duration message))))

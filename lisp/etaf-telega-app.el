@@ -239,18 +239,23 @@ history following its newest message keeps following it."
    (t (setq etaf-telega--history-end t))))
 
 (defun etaf-telega--on-jump (messages)
-  "Merge the MESSAGES page loaded around a requested message and select it."
+  "Merge the MESSAGES page loaded around a requested message and select it.
+`etaf-telega--jump-target' names the message to select; the value t selects
+the newest message of the reported page, which is what a date jump wants."
   (let* ((model etaf-telega--model)
-         (target etaf-telega--jump-target))
+         (target etaf-telega--jump-target)
+         (id (if (eq target t)
+                 (plist-get (car messages) :id)
+               target)))
     (when messages
       (etaf-telega-model-prepend-messages model (reverse messages)))
-    (when target
+    (when (or target messages)
       (setq etaf-telega--jump-target nil)
-      (if (etaf-telega-model-message-by-id model target)
+      (if (and id (etaf-telega-model-message-by-id model id))
           (progn
-            (etaf-telega-model-set-selected model target)
+            (etaf-telega-model-set-selected model id)
             (etaf-telega--goto-ref etaf-telega--buffer
-                                   (etaf-telega--ref 'message target)))
+                                   (etaf-telega--ref 'message id)))
         (etaf-telega-model-set-status model "没有找到这条消息")))))
 
 (defun etaf-telega--on-updated (message)
@@ -401,6 +406,39 @@ A nil CURRENT steps from past the last id."
       (setq etaf-telega--jump-target id)
       (etaf-telega-backend-around etaf-telega--backend id))))
 
+(defun etaf-telega-jump-quote ()
+  "Jump to the message quoted by the message under point (M-g q)."
+  (interactive)
+  (let* ((message (etaf-telega--message-at-point))
+         (id (plist-get (plist-get message :reply) :id)))
+    (unless id (user-error "这条消息没有引用"))
+    (etaf-telega-show-message id)))
+
+(defun etaf-telega-jump-pinned ()
+  "Jump to the open conversation's pinned message (M-g p)."
+  (interactive)
+  (let* ((chat (etaf-telega-model-chat (etaf-telega--model)))
+         (id (and chat (plist-get chat :pinned-id))))
+    (unless id (user-error "这个对话没有置顶消息"))
+    (etaf-telega-show-message id)))
+
+(defun etaf-telega-jump-date (date)
+  "Jump to the message nearest before DATE, a timestamp (M-g d).
+Interactively read a date like 2026-10-05 or 2026-10-05 14:30."
+  (interactive (list (etaf-telega--read-date)))
+  (let ((model (etaf-telega--model)))
+    (unless (etaf-telega-model-chat model)
+      (user-error "先打开一个对话"))
+    (setq etaf-telega--jump-target t)
+    (etaf-telega-backend-date-message etaf-telega--backend date)))
+
+(defun etaf-telega--read-date ()
+  "Read a timestamp the client can jump to."
+  (float-time
+   (date-to-time
+    (read-string "跳到日期（YYYY-MM-DD [HH:MM]）："
+                 (format-time-string "%Y-%m-%d")))))
+
 (defun etaf-telega-next-message ()
   "Move to the next message, or to the composer after the newest one."
   (interactive)
@@ -459,6 +497,15 @@ Each command operates on the message under point.")
     map)
   "Keys of the conversation list screen, after Telega's root buffer.")
 
+(defvar etaf-telega-chat-fastnav-map
+  (let ((map (make-sparse-keymap)))
+    (dolist (pair '(("q" . etaf-telega-jump-quote)
+                    ("p" . etaf-telega-jump-pinned)
+                    ("d" . etaf-telega-jump-date)))
+      (define-key map (kbd (car pair)) (cdr pair)))
+    map)
+  "Message navigation under `M-g', after Telega's chat fastnav keys.")
+
 (defvar etaf-telega-chat-map
   (let ((map (make-sparse-keymap)))
     (etaf-telega--native-map etaf-telega-chat-native-keys map)
@@ -475,6 +522,7 @@ Each command operates on the message under point.")
                     ("C-c i" . etaf-telega-toggle-details)
                     ("q" . etaf-telega-back) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
+    (define-key map (kbd "M-g") etaf-telega-chat-fastnav-map)
     map)
   "Keys of the chat screen, after Telega's chat buffer.")
 
