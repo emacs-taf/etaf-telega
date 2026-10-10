@@ -432,7 +432,7 @@ as Telega's own attachment commands; the draft still becomes the caption."
       (let* ((runtime (etaf-runtime-for-buffer buffer))
              (host (cl-find-if (lambda (entry)
                                  (equal (plist-get (cdr entry) :aria-label)
-                                        "paperclip"))
+                                        "发送图片或文件"))
                                (etaf-runtime-host-props-entries runtime))))
         (should host)
         (etaf-dispatch-event runtime (car host) 'press)
