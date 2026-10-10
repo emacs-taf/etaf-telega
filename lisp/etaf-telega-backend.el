@@ -1589,6 +1589,22 @@ Telega's commands resolve their target through `telega-chat-at' and
     (telega-msg-at :before-until etaf-telega-backend-telega--msg-at))
   "Advices the Telega backend installs while any instance is live.")
 
+(defun etaf-telega-backend-telega--audio-duration (path)
+  "Return the length of the audio file at PATH in seconds, at least 1.
+TDLib wants a positive duration for a voice note; the file itself is
+probed with ffprobe, and a missing probe falls back to one second."
+  (or (ignore-errors
+        (with-temp-buffer
+          (when (zerop (call-process "ffprobe" nil (current-buffer) nil
+                                     "-v" "error"
+                                     "-show_entries" "format=duration"
+                                     "-of" "default=noprint_wrappers=1:nokey=1"
+                                     path))
+            (let ((text (string-trim (buffer-string))))
+              (unless (string-empty-p text)
+                (max 1 (round (string-to-number text))))))))
+      1))
+
 (defun etaf-telega-backend-telega--file-imc (kind path caption)
   "Return the input message content for KIND at PATH with CAPTION."
   (let ((ifile (list :@type "inputFileLocal" :path path))
@@ -1601,8 +1617,13 @@ Telega's commands resolve their target through `telega-chat-at' and
        ('video (list :@type "inputMessageVideo"
                      :video (list :@type "inputVideo" :video ifile
                                   :supports_streaming t)))
+       ;; A voice note is its own object: a bare input file there makes TDLib
+       ;; answer "InputFile is not specified" and the upload never starts.
        ('voice (list :@type "inputMessageVoiceNote"
-                     :voice_note ifile :duration 0))
+                     :voice_note (list :@type "inputVoiceNote"
+                                       :voice_note ifile
+                                       :duration (etaf-telega-backend-telega--audio-duration path)
+                                       :waveform (unibyte-string))))
        (_ (list :@type "inputMessageDocument"
                 :document (list :@type "inputDocument" :document ifile
                                 :disable_content_type_detection :false))))
