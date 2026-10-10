@@ -28,6 +28,7 @@
 
 (declare-function etaf-telega-send "etaf-telega-app" (text))
 (declare-function etaf-telega--keep-draft "etaf-telega-app" (text))
+(declare-function etaf-telega-attach-as "etaf-telega-app" (kind &optional path))
 (declare-function etaf-telega-open-chat "etaf-telega-app" (id))
 (declare-function etaf-telega-select-filter "etaf-telega-app" (key))
 (declare-function etaf-telega-back "etaf-telega-app" ())
@@ -1150,6 +1151,26 @@ by id, so a result can be a message the client has not loaded yet."
           (lambda (left right)
             (< (or (plist-get left :id) 0) (or (plist-get right :id) 0))))))
 
+(defun etaf-telega--composer-attach ()
+  "Return the composer's attach control: a paperclip menu of send kinds.
+Each item sends a chosen file as its Telegram kind, so a photo, video,
+voice note or document goes out with the right type; the composer draft
+becomes the caption, exactly like the `C-c C-a' key."
+  (etaf-node 'box
+             (list :flex-shrink 0 :padding-inline '(ch 0.5)
+                   :color (etaf-telega-color :muted))
+             (list (etaf-node 'etaf-dropdown-menu
+                              (list :icon 'paperclip
+                                    :label "发送图片或文件"
+                                    :width '(ch 24)
+                                    :placement 'top-start
+                                    :items '((:key photo :label "图片" :icon image)
+                                             (:key video :label "视频" :icon video)
+                                             (:key voice :label "语音" :icon mic)
+                                             (:key document :label "文件" :icon file))
+                                    :on-select #'etaf-telega-attach-as)
+                              nil))))
+
 (etaf-define-component etaf-telega-chat-screen (&key model layout)
   "Render MODEL's chat pane: header, scrolling history and fixed composer.
 LAYOUT `compact' shows Telega's lines with a back button; the wider layouts
@@ -1203,6 +1224,7 @@ until the reader scrolls away; reaching its top asks for older messages."
        (expr (etaf-telega--send-options-strip model))
        (flex :flex-direction 'row :align-items 'center :width 'stretch
              :column-gap '(ch 1)
+         (expr (etaf-telega--composer-attach))
          (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
            (etaf-text-input
             :ref 'telega-composer :value (plist-get model :draft)
@@ -1495,7 +1517,7 @@ two-finger swipe goes back from a chat or switches filter tabs."
             ("C-c C-m" "按 Markdown 解析下一条")
             ("C-c C-t" "定时发送（留空取消）")
             ("C-c C-d" "放弃草稿")
-            ("C-c C-a / C-c C-u" "发送附件（按扩展名定类型）/ 取消正在上传的文件")
+            ("回形针 / C-c C-a" "按所选类型发送图片 / 视频 / 语音 / 文件；C-c C-a 按扩展名定类型；C-c C-u 取消正在上传的文件")
             ("@ / #" "成员 / 标签补全，C-n、C-p 选，RET 插入")
             ("C-c C-e / C-c C-p" "表情选择器 / 贴纸选择器（RET 插入或发送）")
             ("Esc / C-c C-k" "离开输入框并保留草稿；回复或编辑时取消并还原")))

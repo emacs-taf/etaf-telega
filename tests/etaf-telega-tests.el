@@ -383,6 +383,37 @@ existing one."
                      t))
       (should (equal (etaf-telega-test--info :status) "已取消上传")))))
 
+(ert-deftest etaf-telega-tests-attach-menu-sends-the-chosen-kind ()
+  "The composer's paperclip menu sends a file as the kind it names.
+The kind wins over the extension, so the menu covers the same four types
+as Telega's own attachment commands; the draft still becomes the caption."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 图说")
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-attach-as 'photo "/tmp/notes.txt")
+      (let ((record (car (etaf-telega-backend-fake-files backend))))
+        (should (equal (plist-get record :kind) 'photo))
+        (should (equal (plist-get record :path) "/tmp/notes.txt"))
+        (should (equal (plist-get record :caption) "图说")))
+      (should-error (etaf-telega-attach-as 'sticker "/tmp/notes.txt")
+                    :type 'user-error)
+      ;; The control is mounted and opens its four kinds.
+      (etaf-telega-backend-fake-confirm-file backend "/tmp/notes.txt")
+      (let* ((runtime (etaf-runtime-for-buffer buffer))
+             (host (cl-find-if (lambda (entry)
+                                 (equal (plist-get (cdr entry) :aria-label)
+                                        "paperclip"))
+                               (etaf-runtime-host-props-entries runtime))))
+        (should host)
+        (etaf-dispatch-event runtime (car host) 'press)
+        (sit-for 0.2)
+        (dolist (label '("图片" "视频" "语音" "文件"))
+          (should (cl-find-if (lambda (entry)
+                                (equal (plist-get (cdr entry) :aria-label) label))
+                              (etaf-runtime-host-props-entries runtime))))))))
+
 (ert-deftest etaf-telega-tests-compose-popovers-complete-and-pick ()
   "Typing @ or # completes; the emoji and sticker pickers insert or send."
   (let ((backend (etaf-telega-backend-fake-create

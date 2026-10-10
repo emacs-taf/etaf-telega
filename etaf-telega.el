@@ -165,6 +165,12 @@
 ;; Discard the composer's text and leave the input (C-c C-d).
 ;; Function: etaf-telega-attach (path)
 ;; Send the file at PATH, choosing its Telegram kind by extension (C-c C-a).
+;; Function: etaf-telega-attach-as (kind &optional path)
+;; Send the file at PATH as KIND, `photo', `video', `voice' or `document'.
+;; The composer's paperclip menu calls it per kind; PATH defaults to a file
+;; read from the minibuffer, the draft becomes the caption, like
+;; `etaf-telega-attach', and the pending upload shows in the status line
+;; until it is accepted or `etaf-telega-cancel-upload' stops it.
 ;; Function: etaf-telega-send-file-as (kind path)
 ;; Send the file at PATH as KIND with the composer draft as caption.
 ;; Function: etaf-telega-cancel-upload ()

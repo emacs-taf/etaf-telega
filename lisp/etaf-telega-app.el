@@ -1281,6 +1281,10 @@ tomorrow when that time has already passed."
                         (time-add time 86400)
                       time))))))
 
+(defconst etaf-telega--attach-kinds
+  '((photo . "图片") (video . "视频") (voice . "语音") (document . "文件"))
+  "Attachment kinds of the composer's paperclip menu, as (KIND . LABEL).")
+
 (defun etaf-telega--file-kind (path)
   "Return the Telegram kind for the file at PATH from its extension."
   (pcase (downcase (or (file-name-extension path) ""))
@@ -1293,6 +1297,27 @@ tomorrow when that time has already passed."
   "Send the file at PATH, choosing its Telegram kind by extension (C-c C-a)."
   (interactive (list (read-file-name "附件：")))
   (etaf-telega-send-file-as (etaf-telega--file-kind path) path))
+
+(defun etaf-telega-attach-as (kind &optional path)
+  "Send the file at PATH as KIND, the composer's paperclip menu action.
+KIND is `photo', `video', `voice' or `document' and decides how Telegram
+treats the file, so a text file can go as a photo and a PNG as a document
+when the sender says so.  PATH defaults to a file read from the minibuffer
+with a prompt for KIND; interactively the kind is read first too.  The
+draft becomes the caption, like `etaf-telega-attach'."
+  (interactive
+   (list (intern (completing-read "附件类型："
+                                  (mapcar (lambda (entry)
+                                            (symbol-name (car entry)))
+                                          etaf-telega--attach-kinds)
+                                  nil t))))
+  (unless (assq kind etaf-telega--attach-kinds)
+    (user-error "未知附件类型：%s" kind))
+  (etaf-telega-send-file-as
+   kind (or path
+            (read-file-name
+             (format "发送%s："
+                     (cdr (assq kind etaf-telega--attach-kinds)))))))
 
 (defun etaf-telega-send-file-as (kind path)
   "Send the file at PATH as KIND, using the composer draft as its caption.
