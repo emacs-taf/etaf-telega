@@ -259,6 +259,21 @@
    "name": "etaf-telega-tests-attach-menu-sends-the-chosen-kind",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "The composer's paperclip menu offers the four attachment kinds and sends the chosen one with the draft as caption."
+  },
+  {
+   "name": "etaf-telega-tests-read-only-channel-shows-why-it-cannot-post",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "A channel without post rights shows why instead of a composer and refuses the send."
+  },
+  {
+   "name": "etaf-telega-tests-attach-refuses-an-empty-path",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "An empty or directory attachment answer starts no upload and keeps the draft."
+  },
+  {
+   "name": "etaf-telega-tests-failed-send-clears-the-pending-upload",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "A backend send failure drops the upload strip and keeps the draft."
   }
  ]
 }

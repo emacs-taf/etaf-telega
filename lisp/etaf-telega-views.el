@@ -28,6 +28,8 @@
 
 (declare-function etaf-telega-send "etaf-telega-app" (text))
 (declare-function etaf-telega--keep-draft "etaf-telega-app" (text))
+(declare-function etaf-telega--can-post-p "etaf-telega-app" (chat))
+(declare-function etaf-telega--no-post-text "etaf-telega-app" (chat))
 (declare-function etaf-telega-attach-as "etaf-telega-app" (kind &optional path))
 (declare-function etaf-telega-open-chat "etaf-telega-app" (id))
 (declare-function etaf-telega-select-filter "etaf-telega-app" (key))
@@ -1222,24 +1224,33 @@ until the reader scrolls away; reaching its top asks for older messages."
        (expr (etaf-telega--popover-panel model))
        (expr (etaf-telega--upload-strip model))
        (expr (etaf-telega--send-options-strip model))
-       (flex :flex-direction 'row :align-items 'center :width 'stretch
-             :column-gap '(ch 1)
-         (expr (etaf-telega--composer-attach))
-         (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
-           (etaf-text-input
-            :ref 'telega-composer :value (plist-get model :draft)
-            :label "消息" :hide-label t :rows 1 :width 'stretch :variant 'plain
-            :placeholder "写消息…  (i 输入 · RET 发送 · S-RET 换行)"
-            :submit-on-return t
-            :keymap etaf-telega--composer-keymap
-            :on-change #'etaf-telega--compose-changed
-            :on-submit #'etaf-telega-send
-            :on-cancel #'etaf-telega--keep-draft))
-         (etaf-ui-icon :name 'send :color (etaf-telega-color :accent)
-                       :help-echo "发送 (RET)"
-                       :on-press (lambda ()
-                                   (etaf-telega-send
-                                    (etaf-value (plist-get model :draft)))))))))))
+       (expr (if (etaf-telega--can-post-p (etaf-value (plist-get model :chat)))
+                 (etaf-view
+                  (flex :flex-direction 'row :align-items 'center :width 'stretch
+                        :column-gap '(ch 1)
+                    (expr (etaf-telega--composer-attach))
+                    (box :flex-grow 1 :flex-basis '(ch 0) :min-width '(ch 0)
+                      (etaf-text-input
+                       :ref 'telega-composer :value (plist-get model :draft)
+                       :label "消息" :hide-label t :rows 1 :width 'stretch :variant 'plain
+                       :placeholder "写消息…  (i 输入 · RET 发送 · S-RET 换行)"
+                       :submit-on-return t
+                       :keymap etaf-telega--composer-keymap
+                       :on-change #'etaf-telega--compose-changed
+                       :on-submit #'etaf-telega-send
+                       :on-cancel #'etaf-telega--keep-draft))
+                    (etaf-ui-icon :name 'send :color (etaf-telega-color :accent)
+                                  :help-echo "发送 (RET)"
+                                  :on-press (lambda ()
+                                              (etaf-telega-send
+                                               (etaf-value (plist-get model :draft)))))))
+               (etaf-view
+                (flex :flex-direction 'row :align-items 'center
+                      :justify-content 'center :width 'stretch
+                      :padding-top '(lh 0.5)
+                  (text :color (etaf-telega-color :muted)
+                        (expr (etaf-telega--no-post-text
+                               (etaf-value (plist-get model :chat))))))))))))))
 
 (defun etaf-telega--empty-chat-pane ()
   "Return the chat pane shown beside the list before a chat is opened."
@@ -1492,6 +1503,7 @@ two-finger swipe goes back from a chat or switches filter tabs."
             ("/ 或 s" "搜索会话（RET 打开第一个结果）")
             ("i a o r d P ^ M A L DEL" "Telega 会话命令：资料、加成员、操作菜单、已读、删除、置顶、静音、归档、离开")
             ("T" "切换暗色 / 亮色主题")
+            ("C-c C-u" "取消正在上传的文件（分栏布局下也能按）")
             ("?" "显示 / 隐藏本页")
             ("q / Q" "隐藏 / 关闭客户端")))
     (:key chat :title "对话页"

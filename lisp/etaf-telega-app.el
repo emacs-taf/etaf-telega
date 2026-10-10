@@ -337,8 +337,16 @@ the newest message of the reported page, which is what a date jump wants."
           :message (report #'etaf-telega-model-append-message model)
           :error (report (lambda (text)
                            (setq etaf-telega--older-pending nil)
+                           ;; A failed send must not leave the composer
+                           ;; reporting an upload that will never finish.
+                           (when (etaf-telega-model-upload model)
+                             (etaf-telega-model-set-upload model nil))
                            (etaf-telega-model-set-status
-                            model (format "错误：%s" (etaf-telega--clip-text text))))))))
+                            model (format "错误：%s"
+                                          (etaf-telega--clip-text
+                                           (replace-regexp-in-string
+                                            "\\`telega error=[0-9]+: " ""
+                                            (or text ""))))))))))
 
 ;;;; Point selection
 
@@ -625,6 +633,9 @@ Each command operates on the message under point.")
                     ("J" . telega-chat-join-by-link)
                     ("N" . telega-chat-create) ("+" . telega-chat-create)
                     ("T" . etaf-telega-toggle-theme)
+                    ;; A failed send can leave an upload pending; keep its
+                    ;; cancel reachable from the list side of a split layout.
+                    ("C-c C-u" . etaf-telega-cancel-upload)
                     ("?" . etaf-telega-toggle-help)
                     ("q" . bury-buffer) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
@@ -1331,6 +1342,12 @@ message is accepted and the pending upload shows in the status line."
          (chat (etaf-telega-model-chat model))
          (caption (etaf-telega-model-draft model)))
     (unless chat (user-error "先选择一个对话"))
+    (unless (etaf-telega--can-post-p chat)
+      (user-error "%s" (etaf-telega--no-post-text chat)))
+    (unless (and (stringp path) (not (string-empty-p path)))
+      (user-error "没有选择文件"))
+    (when (file-directory-p path)
+      (user-error "不能发送文件夹：%s" path))
     (etaf-telega--reset-input-history)
     (etaf-telega-model-set-upload model
                                   (list :path path
@@ -1588,14 +1605,31 @@ An edit restores the draft that was present before editing began."
         (etaf-telega-model-set-compose model nil))
       (etaf-telega--save-current-draft))))
 
+(defun etaf-telega--can-post-p (chat)
+  "Return non-nil when CHAT accepts new messages from the user.
+A projection without the flag is assumed writable, so alternate backends
+keep working; an explicit nil marks a read-only channel or conversation."
+  (or (null chat)
+      (not (plist-member chat :can-post))
+      (and (plist-get chat :can-post) t)))
+
+(defun etaf-telega--no-post-text (chat)
+  "Return the reason CHAT cannot be posted to right now."
+  (if (eq (plist-get chat :kind) 'channel)
+      "此频道只允许管理员发言"
+    "你不能在此对话发言"))
+
 (defun etaf-telega-send (text)
   "Send TEXT to the open chat, honouring the compose state.
 A reply carries its quoted message; an edit replaces its target.  The draft
 stays until the backend accepts it, so a failure keeps the text for retry."
   (let* ((model (etaf-telega--model))
+         (chat (etaf-telega-model-chat model))
          (compose (etaf-telega-model-compose model)))
-    (unless (etaf-telega-model-chat model)
+    (unless chat
       (user-error "先选择一个对话"))
+    (unless (etaf-telega--can-post-p chat)
+      (user-error "%s" (etaf-telega--no-post-text chat)))
     (etaf-telega--popover-close)
     (unless (string-empty-p (string-trim text))
       (etaf-telega--reset-input-history)

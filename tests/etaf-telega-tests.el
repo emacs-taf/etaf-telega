@@ -414,6 +414,57 @@ as Telega's own attachment commands; the draft still becomes the caption."
                                 (equal (plist-get (cdr entry) :aria-label) label))
                               (etaf-runtime-host-props-entries runtime))))))))
 
+(ert-deftest etaf-telega-tests-read-only-channel-shows-why-it-cannot-post ()
+  "A channel the user may not post to hides the composer and refuses sends."
+  (let* ((backend (etaf-telega-backend-fake-create
+                   :chats (list (list :id 1 :title "新闻频道" :unread 0 :preview "头条"
+                                      :kind 'channel :can-post nil :time "10:00")
+                                (list :id 2 :title "工作群" :unread 0 :preview "周报"
+                                      :kind 'group :time "09:30"))
+                   :histories (etaf-telega-test--histories
+                               (list 1 (list :id 11 :sender "新闻" :time "10:00" :text "头条"))
+                               (list 2 (list :id 21 :sender "Bob" :time "09:30" :text "周报"))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (should (string-search "只允许管理员发言" (etaf-telega-test--text)))
+      (should-not (string-search "写消息" (etaf-telega-test--text)))
+      (should-error (etaf-telega-send "你好") :type 'user-error)
+      (should-not (etaf-telega-backend-fake-sends backend))
+      ;; A writable conversation keeps the composer and sends normally.
+      (etaf-telega-open-chat 2)
+      (should (string-search "写消息" (etaf-telega-test--text)))
+      (etaf-telega-send "在的")
+      (should (equal (car (etaf-telega-backend-fake-sent backend)) "在的")))))
+
+(ert-deftest etaf-telega-tests-attach-refuses-an-empty-path ()
+  "An empty file answer starts no upload and keeps the draft."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 说明")
+      (etaf-telega-test--keys "C-c C-k")
+      (should-error (etaf-telega-send-file-as 'document "") :type 'user-error)
+      (should-error (etaf-telega-send-file-as 'photo nil) :type 'user-error)
+      (should-error (etaf-telega-send-file-as 'document "/tmp") :type 'user-error)
+      (should-not (etaf-telega-backend-fake-files backend))
+      (should (equal (etaf-telega-test--info :draft) "说明"))
+      (should-not (string-search "正在上传" (etaf-telega-test--text)))
+      (should-not (string-search "正在上传" (etaf-telega-test--info :status))))))
+
+(ert-deftest etaf-telega-tests-failed-send-clears-the-pending-upload ()
+  "A backend failure drops the upload strip and keeps the draft for retry."
+  (let ((backend (etaf-telega-test--backend)))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (etaf-telega-test--keys "i 说明")
+      (etaf-telega-test--keys "C-c C-k")
+      (etaf-telega-send-file-as 'document "/tmp/notes.txt")
+      (should (string-search "正在上传" (etaf-telega-test--text)))
+      (etaf-telega-backend-fake-fail backend "telega error=400: 管理员权限不足")
+      (should (equal (etaf-telega-test--info :status) "错误：管理员权限不足"))
+      (should-not (string-search "正在上传" (etaf-telega-test--text)))
+      (should (equal (etaf-telega-test--info :draft) "说明")))))
+
 (ert-deftest etaf-telega-tests-compose-popovers-complete-and-pick ()
   "Typing @ or # completes; the emoji and sticker pickers insert or send."
   (let ((backend (etaf-telega-backend-fake-create

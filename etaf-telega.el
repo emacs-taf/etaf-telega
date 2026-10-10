@@ -173,8 +173,12 @@
 ;; until it is accepted or `etaf-telega-cancel-upload' stops it.
 ;; Function: etaf-telega-send-file-as (kind path)
 ;; Send the file at PATH as KIND with the composer draft as caption.
+;; An empty PATH or a directory is refused before any upload starts, and a
+;; conversation the user may not post to is refused like `etaf-telega-send'.
 ;; Function: etaf-telega-cancel-upload ()
-;; Cancel the file upload in progress (C-c C-u).
+;; Cancel the file upload in progress (C-c C-u); a failed send's pending
+;; state is dropped too, so the composer never keeps reporting an upload
+;; that will not finish.
 ;; Function: etaf-telega-open-emoji ()
 ;; Show the emoji picker over the composer (C-c C-e); RET inserts the
 ;; selected emoji at the end of the draft.
@@ -199,7 +203,8 @@
 ;; Function: etaf-telega-send (text)
 ;; Send TEXT to the open conversation, honouring the armed reply or edit.
 ;; The draft stays until the backend accepts the change, so a failure keeps
-;; the text for another attempt.
+;; the text for another attempt; a conversation the user may not post to (a
+;; broadcast channel without administrator rights) is refused before sending.
 ;;
 ;; Function: etaf-telega-info ()
 ;; Return a plist of visible client facts without network I/O: :buffer
@@ -325,6 +330,8 @@
 ;; (:kind :path :caption :options) plists.
 ;; Function: etaf-telega-backend-fake-confirm-file (backend path)
 ;; Report the upload of PATH as accepted and append its message.
+;; Function: etaf-telega-backend-fake-fail (backend text)
+;; Report TEXT as a failed operation through BACKEND's error callback.
 ;; Function: etaf-telega-backend-fake-replies (backend)
 ;; Return the (TEXT . MESSAGE-ID) replies BACKEND recorded for its sends.
 ;; Function: etaf-telega-backend-fake-natives (backend)

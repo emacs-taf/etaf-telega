@@ -14,10 +14,12 @@
 ;;   :me       (plist)                  own account (:id :name :username)
 ;;   :chats    (list of chat plists)    (:id :title :preview :author :unread
 ;;                                      :pinned :muted :kind :archived :mention
-;;                                      :online :username :time :order
+;;                                      :online :can-post :username :time :order
 ;;                                      :photo :members :last-read :pinned-id),
 ;;                                      main list then
-;;                                      archive, each in the server's order
+;;                                      archive, each in the server's order.
+;;                                      :can-post is nil on a broadcast
+;;                                      channel only administrators may post to
 ;;   :messages (list of message plists) the chat's newest page, newest first
 ;;   :older    (list of message plists) an older page, newest first
 ;;   :message  (message plist)          one later message for the selected
@@ -31,6 +33,10 @@
 ;;   :deleted  (id)                     id of a removed message
 ;;   :read     (list of ids)            messages accepted as read
 ;;   :error    (string)                 readable failure
+;;
+;; A send the chat refuses (missing post rights, an invalid or empty file
+;; path, a server rejection) reports through `:error'; the application keeps
+;; the draft and drops any pending upload instead of showing it forever.
 ;;
 ;; Message plists carry (:id :outgoing :sender :time :date :edited :kind
 ;; :file :link :media :avatar :reply :reactions :duration :views :text);
@@ -210,7 +216,12 @@ DORMANT holds conversations the initial list does not carry; searching finds
 them like a server-side search does.  MEMBERS and STICKERS seed the composer
 popovers' completion sources."
   (make-etaf-telega-backend-fake
-   :chats chats :histories (or histories (make-hash-table :test #'equal))
+   :chats (mapcar (lambda (chat)
+                    (if (plist-member chat :can-post)
+                        chat
+                      (plist-put (copy-tree chat) :can-post t)))
+                  chats)
+   :histories (or histories (make-hash-table :test #'equal))
    :responder responder :sent nil :drafts (make-hash-table :test #'equal)
    :dormant dormant :members members :stickers stickers))
 
@@ -427,6 +438,13 @@ The message id follows the stored history, like
         (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
                                        :sent)))
           (funcall report message))))))
+
+(defun etaf-telega-backend-fake-fail (backend text)
+  "Report TEXT as a failed operation through BACKEND's error callback.
+Lets a test drive the application's failure handling without a server."
+  (when-let* ((report (plist-get (etaf-telega-backend-fake-callbacks backend)
+                                 :error)))
+    (funcall report text)))
 
 (cl-defmethod etaf-telega-backend-cancel-upload ((backend etaf-telega-backend-fake)
                                                  path)
@@ -729,6 +747,14 @@ A missing file starts downloading once; ON-READY runs when it is local."
          (text (and content (plist-get content :text))))
     (or (and text (telega-tl-str text :text)) "")))
 
+(defun etaf-telega-backend-telega--can-post-p (chat)
+  "Return non-nil when the current user may send messages to CHAT.
+TDLib checks the same local permissions when a send arrives, so a broadcast
+channel the user does not administer is refused here before any request."
+  (and chat
+       (ignore-errors (telega-chat-match-p chat 'can-send-or-post))
+       t))
+
 (defun etaf-telega-backend-telega--project-chat (chat &optional position)
   "Return CHAT's projection plist at chat list POSITION."
   (let* ((last (plist-get chat :last_message))
@@ -756,6 +782,7 @@ A missing file starts downloading once; ON-READY runs when it is local."
           :online (and (ignore-errors
                         (telega-user-online-p (telega-chat--info-locally chat)))
                        t)
+          :can-post (etaf-telega-backend-telega--can-post-p chat)
           :username (or (ignore-errors
                          (telega-tl-str (telega-chat--info-locally chat) :username))
                         "")
@@ -1411,15 +1438,21 @@ accepts it; immediate failures are reported without keeping a half-send."
                          (cons :@type (cons "messageSendOptions" send-options)))))
     (unless chat
       (error "没有选中的对话"))
+    (unless (etaf-telega-backend-telega--can-post-p chat)
+      (error "当前对话不能发言"))
     (push (list :text text :reply reply-to)
           (etaf-telega-backend-telega-pending backend))
     (condition-case err
+        ;; Telega's own sends wait for the answer, so a message refused right
+        ;; away (permissions, invalid input) reaches this handler instead of
+        ;; only printing a server error and leaving the draft pending forever.
         (telega--sendMessage
          chat imc
          (when reply-to
            (list :@type "inputMessageReplyToMessage"
                  :message_id (plist-get reply-to :id) :quote nil))
-         send-options)
+         send-options
+         :sync-p t)
       (error
        (setf (etaf-telega-backend-telega-pending backend)
              (cl-remove text (etaf-telega-backend-telega-pending backend)
@@ -1647,24 +1680,26 @@ probed with ffprobe, and a missing probe falls back to one second."
                          (when flags
                            (cons :@type (cons "messageSendOptions" flags))))))
     (unless chat (error "没有选中的对话"))
-    (condition-case err
-        (telega--sendMessage
-         chat (etaf-telega-backend-telega--file-imc kind path caption)
-         nil send-options
-         :callback
-         (lambda (message)
-           (etaf-telega-backend-telega--guard
-            backend "发送附件"
-            (lambda ()
-              ;; MESSAGE is TDLib's local copy; the confirmed message reaches
-              ;; the application through `--message', which replaces this
-              ;; record instead of showing the file twice.
-              (push (list :path path :name name :message message)
-                    (etaf-telega-backend-telega-uploads backend))
-              (when-let* ((report (plist-get callbacks :upload)))
-                (funcall report (list :name name :progress 0)))))))
-      (error (etaf-telega-backend-telega--report
-              backend :error (error-message-string err))))
+    (unless (etaf-telega-backend-telega--can-post-p chat)
+      (error "当前对话不能发言"))
+    (let ((record (list :path path :name name :message nil)))
+      ;; Record before the round trip, so upload progress can match the file;
+      ;; the message is filled in when Telega answers with the local copy.
+      (push record (etaf-telega-backend-telega-uploads backend))
+      (condition-case err
+          (progn
+            (setf (plist-get record :message)
+                  (telega--sendMessage
+                   chat (etaf-telega-backend-telega--file-imc kind path caption)
+                   nil send-options
+                   :sync-p t))
+            (when-let* ((report (plist-get callbacks :upload)))
+              (funcall report (list :name name :progress 0))))
+        (error
+         (setf (etaf-telega-backend-telega-uploads backend)
+               (delq record (etaf-telega-backend-telega-uploads backend)))
+         (etaf-telega-backend-telega--report
+          backend :error (error-message-string err)))))
     path))
 
 (cl-defmethod etaf-telega-backend-cancel-upload ((backend etaf-telega-backend-telega)
@@ -1751,33 +1786,35 @@ probed with ffprobe, and a missing probe falls back to one second."
   (let ((chat (and chat-id (telega-chat-get chat-id)))
         (callbacks (etaf-telega-backend-telega-callbacks backend)))
     (unless chat (error "没有选中的对话"))
+    (unless (etaf-telega-backend-telega--can-post-p chat)
+      (error "当前对话不能发言"))
     (condition-case err
-        (telega--sendMessage
-         chat
-         (list :@type "inputMessageSticker"
-               :sticker (append
-                         (list :@type "inputSticker"
-                               :sticker (list :@type "inputFileId"
-                                              :id (plist-get sticker :file-id))
-                               :width (or (plist-get sticker :width) 0)
-                               :height (or (plist-get sticker :height) 0))
-                         (when (plist-get sticker :thumb-id)
-                           (list :thumbnail
-                                 (list :@type "inputThumbnail"
-                                       :width (or (plist-get sticker :thumb-width) 0)
-                                       :height (or (plist-get sticker :thumb-height) 0)
-                                       :thumbnail (list :@type "inputFileId"
-                                                        :id (plist-get sticker :thumb-id))))))
-               :emoji (or (plist-get sticker :emoji) ""))
-         nil nil
-         :callback
-         (lambda (message)
-           (etaf-telega-backend-telega--guard
-            backend "发送贴纸"
-            (lambda ()
-              (when-let* ((report (plist-get callbacks :sent)))
-                (funcall report
-                         (etaf-telega-backend-telega--project-message backend message)))))))
+        (let ((message
+               (telega--sendMessage
+                chat
+                (list :@type "inputMessageSticker"
+                      :sticker (append
+                                (list :@type "inputSticker"
+                                      :sticker (list :@type "inputFileId"
+                                                     :id (plist-get sticker :file-id))
+                                      :width (or (plist-get sticker :width) 0)
+                                      :height (or (plist-get sticker :height) 0))
+                                (when (plist-get sticker :thumb-id)
+                                  (list :thumbnail
+                                        (list :@type "inputThumbnail"
+                                              :width (or (plist-get sticker :thumb-width) 0)
+                                              :height (or (plist-get sticker :thumb-height) 0)
+                                              :thumbnail (list :@type "inputFileId"
+                                                               :id (plist-get sticker :thumb-id))))))
+                      :emoji (or (plist-get sticker :emoji) ""))
+                nil nil
+                :sync-p t)))
+          (when-let* ((report (plist-get callbacks :sent)))
+            (etaf-telega-backend-telega--guard
+             backend "发送贴纸"
+             (lambda ()
+               (funcall report
+                        (etaf-telega-backend-telega--project-message backend message))))))
       (error (etaf-telega-backend-telega--report
               backend :error (error-message-string err))))
     (plist-get sticker :id)))
