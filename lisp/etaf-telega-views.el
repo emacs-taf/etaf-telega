@@ -33,6 +33,8 @@
 (declare-function etaf-telega-back "etaf-telega-app" ())
 (declare-function etaf-telega-react "etaf-telega-app" (id key))
 (declare-function etaf-telega-close-media "etaf-telega-app" ())
+(declare-function etaf-telega-close-help "etaf-telega-app" ())
+(declare-function etaf-telega-toggle-help "etaf-telega-app" ())
 (declare-function etaf-telega-swipe "etaf-telega-app" (direction))
 (declare-function etaf-telega--history-scrolled "etaf-telega-app" (offset))
 (declare-function etaf-telega--viewer-step "etaf-telega-app" (delta))
@@ -437,6 +439,7 @@ The title keeps its width first; the subtitle is clipped before it."
               :icon 'account :disabled t)
         (list :key 'create :label "新建对话" :icon 'plus)
         (list :key 'join :label "通过链接加入" :icon 'users)
+        (list :key 'help :label "键盘快捷键" :icon 'info)
         (list :key 'theme :label "切换主题" :icon 'settings)
         (list :key 'close :label "关闭" :icon 'close)))
 
@@ -469,6 +472,7 @@ state instead of its prompt."
     (:key search :label "搜索消息" :icon search)
     (:key newest :label "跳到最新消息" :icon chevron-down)
     (:key reload :label "重新载入" :icon refresh)
+    (:key help :label "键盘快捷键" :icon info)
     (:key back :label "关闭对话" :icon close))
   "Items of the chat header's more menu.")
 
@@ -503,6 +507,7 @@ title's place and the history shows only matching messages."
              (etaf-telega--bar-button 'search "搜索消息 (/)" #'etaf-telega-chat-search)
              (etaf-telega--bar-button 'sidebar "对话信息 (C-c i)"
                                       #'etaf-telega-toggle-details)
+             (etaf-telega--bar-help)
              (etaf-telega--bar-menu 'more-vertical "更多" etaf-telega--chat-menu-items
                                     #'etaf-telega--chat-menu-select 'bottom-end))))))
 
@@ -1219,10 +1224,21 @@ until the reader scrolls away; reaching its top asks for older messages."
   (etaf-node 'flex (append (etaf-telega--pane-style 'telega-chat-pane)
                            (list :justify-content 'center :align-items 'center
                                  :background-color (etaf-telega-color :chat-bg)))
-             (list (etaf-node 'box (list :padding-inline '(ch 2)
-                                         :background-color (etaf-telega-color :surface-2)
-                                         :color (etaf-telega-color :muted))
-                              (list "选择一个对话开始聊天")))))
+             (list (etaf-node 'flex (list :flex-direction 'column
+                                          :align-items 'center
+                                          :row-gap '(lh 1))
+                              (list (etaf-node 'box
+                                               (list :padding-inline '(ch 2)
+                                                     :background-color
+                                                     (etaf-telega-color :surface-2)
+                                                     :color (etaf-telega-color :muted))
+                                               (list "选择一个对话开始聊天"))
+                                    (etaf-node 'box (list :color (etaf-telega-color :muted))
+                                               (list "按 ? 查看全部键盘快捷键")))))))
+
+(defun etaf-telega--bar-help ()
+  "Return the app bar button that opens the shortcut reference."
+  (etaf-telega--bar-button 'info "键盘快捷键 (?)" #'etaf-telega-toggle-help))
 
 (defun etaf-telega--details-section (title children)
   "Return a details section headed by muted TITLE over CHILDREN."
@@ -1434,7 +1450,130 @@ two-finger swipe goes back from a chat or switches filter tabs."
      (list (etaf-node 'flex (list :flex-direction 'row :width 'stretch
                                   :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 0))
                       (delq nil panes))
-           (etaf-view (etaf-telega-viewer :model model))))))
+           (etaf-view (etaf-telega-viewer :model model))
+           (etaf-view (etaf-telega-help :model model))))))
+
+;;;; Keyboard shortcuts
+
+(defconst etaf-telega--shortcut-groups
+  '((:key list :title "会话列表"
+     :rows (("RET" "打开光标所在的会话")
+            ("n / p" "下一条 / 上一条会话")
+            ("j" "按名字跳会话")
+            ("M-g u" "下一个未读会话")
+            ("[ / ]" "上一个 / 下一个过滤器")
+            ("/ 或 s" "搜索会话（RET 打开第一个结果）")
+            ("i a o r d P ^ M A L DEL" "Telega 会话命令：资料、加成员、操作菜单、已读、删除、置顶、静音、归档、离开")
+            ("T" "切换暗色 / 亮色主题")
+            ("?" "显示 / 隐藏本页")
+            ("q / Q" "隐藏 / 关闭客户端")))
+    (:key chat :title "对话页"
+     :rows (("RET" "打开图片、视频、语音或音频；其他位置开始输入")
+            ("i" "进入底部输入框")
+            ("n / p" "下一条 / 上一条消息；> 跳到最新")
+            ("M-<" "加载更早的历史")
+            ("M-g q / p / d" "跳到被引用、置顶或指定日期的消息")
+            ("M-g u / m / o" "下一条未读 / 提及我的 / 我自己发送的消息")
+            ("+" "为光标处的消息添加或取消表情回应")
+            ("r / e" "回复 / 编辑光标处的消息")
+            ("/" "在已载入的消息里搜索")
+            ("C-c i" "显示 / 隐藏对话信息栏")
+            ("c d f l s t ! ^ * T = B R o I" "Telega 消息命令：复制、删除、转发、链接、保存、翻译、反应、置顶、收藏、话题、编辑记录、封禁、重发、操作菜单、详情")
+            ("g" "重新载入最新历史")
+            ("?" "显示 / 隐藏本页")
+            ("q / Q" "返回会话列表 / 关闭客户端")))
+    (:key input :title "输入框"
+     :rows (("RET" "发送；S-RET / C-j 换行")
+            ("M-p / M-n" "上一条 / 下一条已发送文本")
+            ("C-c C-s" "静默发送（对方没有通知）")
+            ("C-c C-l" "下一条不带链接预览")
+            ("C-c C-m" "按 Markdown 解析下一条")
+            ("C-c C-t" "定时发送（留空取消）")
+            ("C-c C-d" "放弃草稿")
+            ("C-c C-a / C-c C-u" "发送附件（按扩展名定类型）/ 取消正在上传的文件")
+            ("@ / #" "成员 / 标签补全，C-n、C-p 选，RET 插入")
+            ("C-c C-e / C-c C-p" "表情选择器 / 贴纸选择器（RET 插入或发送）")
+            ("Esc / C-c C-k" "离开输入框并保留草稿；回复或编辑时取消并还原")))
+    (:key viewer :title "媒体查看器"
+     :rows (("SPC 或 k" "播放 / 暂停")
+            ("n / p" "下一个 / 上一个媒体")
+            ("← / →" "视频前进 / 后退 5 秒，其他媒体切换上一个 / 下一个")
+            ("j / l" "后退 / 前进 10 秒")
+            ("m" "静音切换")
+            ("." "切换播放速度")
+            ("q / Esc" "关闭查看器"))))
+  "Keyboard shortcuts shown by the help dialog, one tab per group.
+A group is a plist with :key, :title and :rows; a row is (KEYS WHAT-IT-DOES).
+The sheet opens on the conversation list.")
+
+(defun etaf-telega--shortcut-group (key)
+  "Return the shortcut group whose :key is KEY, or the first group."
+  (or (cl-find key etaf-telega--shortcut-groups
+               :key (lambda (group) (plist-get group :key))
+               :test #'eq)
+      (car etaf-telega--shortcut-groups)))
+
+(defun etaf-telega--shortcut-row (key label)
+  "Return one shortcut table row: KEY and what it does.
+The key keeps a fixed column so the descriptions line up; the description
+takes the rest of the line and wraps when the dialog narrows."
+  (etaf-node 'flex (list :flex-direction 'row :column-gap '(ch 2)
+                         :width 'stretch :min-width '(ch 0))
+             (list (etaf-node 'box (list :width '(ch 15) :flex-shrink 0
+                                         :padding-inline '(ch 1)
+                                         :border-radius '(px 6)
+                                         :background-color (etaf-telega-color :surface-2))
+                               (list (etaf-node 'text
+                                                (list :font-weight 'bold
+                                                      :color (etaf-telega-color :ink))
+                                                (list key))))
+                   (etaf-node 'box (list :flex-grow 1 :flex-basis 'auto
+                                         :flex-shrink 1 :min-width '(ch 0))
+                              (list (etaf-node 'text
+                                               (list :color (etaf-telega-color :muted))
+                                               (list label)))))))
+
+(defun etaf-telega--shortcut-tabs (model tab)
+  "Return the shortcut sheet's tab row, marking TAB active.
+Each tab is a button that switches the sheet to its group."
+  (etaf-node 'flex (list :flex-direction 'row :width 'stretch
+                         :column-gap '(ch 1) :padding-bottom '(lh 1))
+             (mapcar
+              (lambda (group)
+                (let ((key (plist-get group :key)))
+                  (etaf-node 'etaf-button
+                             (list :label (plist-get group :title)
+                                   :aria-label (plist-get group :title)
+                                   :variant (if (eq key tab) 'secondary 'ghost)
+                                   :ref (intern (format "etaf-telega-help-tab-%s" key))
+                                   :on-press (lambda ()
+                                               (etaf-telega-model-set-help-tab model key)))
+                             nil)))
+              etaf-telega--shortcut-groups)))
+
+(etaf-define-component etaf-telega-help (&key model)
+  "Show MODEL's keyboard shortcut reference as a modal dialog.
+The sheet carries one tab per screen - the conversation list, the chat page,
+the composer and the media viewer - and lists that screen's keys, so it
+stays readable whatever the window height."
+  :bindings ((columns (etaf-computed #'etaf-telega--columns)))
+  :render
+  (let* ((open (etaf-value (plist-get model :help)))
+         (columns (etaf-value columns))
+         (tab (etaf-value (plist-get model :help-tab)))
+         (group (etaf-telega--shortcut-group tab)))
+    (etaf-node 'etaf-dialog
+        (list :open (and open t)
+              :title "键盘快捷键"
+              :width (list 'ch (max 40 (min 76 (- columns 4))))
+              :close-label "关闭"
+              :on-close #'etaf-telega-close-help)
+      (list (etaf-telega--shortcut-tabs model tab)
+            (etaf-node 'flex (list :flex-direction 'column :width 'stretch
+                                   :min-width '(ch 0) :row-gap '(lh 0))
+                       (mapcar (lambda (row)
+                                 (etaf-telega--shortcut-row (car row) (cadr row)))
+                               (plist-get group :rows)))))))
 
 (provide 'etaf-telega-views)
 ;;; etaf-telega-views.el ends here

@@ -206,6 +206,11 @@
 ;; Function: etaf-telega-toggle-theme ()
 ;; Switch the open client between the dark and light palettes and repaint (T
 ;; on the list).
+;; Function: etaf-telega-toggle-help ()
+;; Show or hide the keyboard shortcut sheet over the client (?); the sheet
+;; lists every key the client and Telega answer to on the current screen.
+;; Function: etaf-telega-close-help ()
+;; Hide the shortcut sheet, from its close control or the modal's Escape.
 ;; Function: etaf-telega-color (key)
 ;; Return the active palette's color for KEY; every view reads its colors
 ;; through this function so a theme switch stays consistent.

@@ -625,6 +625,7 @@ Each command operates on the message under point.")
                     ("J" . telega-chat-join-by-link)
                     ("N" . telega-chat-create) ("+" . telega-chat-create)
                     ("T" . etaf-telega-toggle-theme)
+                    ("?" . etaf-telega-toggle-help)
                     ("q" . bury-buffer) ("Q" . etaf-telega-close)))
       (define-key map (kbd (car pair)) (cdr pair)))
     (define-key map (kbd "M-g") etaf-telega-root-fastnav-map)
@@ -658,6 +659,7 @@ Each command operates on the message under point.")
                     ("g" . etaf-telega-reload-chat) ("M-<" . etaf-telega-load-more)
                     ("/" . etaf-telega-chat-search)
                     ("C-c i" . etaf-telega-toggle-details)
+                    ("?" . etaf-telega-toggle-help)
                     ("C-c C-s" . etaf-telega-toggle-silent)
                     ("C-c C-l" . etaf-telega-toggle-link-preview)
                     ("C-c C-m" . etaf-telega-toggle-markdown)
@@ -888,12 +890,29 @@ messages the client has not loaded.  A stale answer is dropped."
       (user-error "先打开一个对话"))
     (etaf-telega-model-set-details model (not (etaf-telega-model-details model)))))
 
+(defun etaf-telega-close-help ()
+  "Hide the keyboard shortcut reference."
+  (interactive)
+  (etaf-telega-model-set-help (etaf-telega--model) nil))
+
+(defun etaf-telega-toggle-help ()
+  "Show or hide the keyboard shortcut reference (?).
+The sheet lists every key the client and Telega answer to, so the client
+can be used without reading its manual."
+  (interactive)
+  (let ((model (etaf-telega--model)))
+    (unless model (user-error "Telegram 客户端没有打开"))
+    (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
+      (etaf-text-input-end t))
+    (etaf-telega-model-set-help model (not (etaf-telega-model-help model)))))
+
 (defun etaf-telega--list-menu-select (key)
   "Run the list menu item KEY.
 Commands that remount or close the client run after the menu's own event."
   (pcase key
     ('create (call-interactively #'telega-chat-create))
     ('join (call-interactively #'telega-chat-join-by-link))
+    ('help (run-at-time 0 nil #'etaf-telega-toggle-help))
     ('theme (run-at-time 0 nil #'etaf-telega-toggle-theme))
     ('close (run-at-time 0 nil #'etaf-telega-close))))
 
@@ -904,6 +923,7 @@ Commands that remount or close the client run after the menu's own event."
     ('search (etaf-telega-chat-search))
     ('newest (etaf-telega-jump-newest))
     ('reload (etaf-telega-reload-chat))
+    ('help (run-at-time 0 nil #'etaf-telega-toggle-help))
     ('back (etaf-telega-back))))
 
 ;;;; Filters
@@ -1630,6 +1650,7 @@ Leaving an edit restores the draft captured before editing."
           :draft (and model (etaf-telega-model-draft model))
           :history-end etaf-telega--history-end
           :viewer (plist-get (and model (etaf-telega-model-viewer model)) :id)
+          :help (and model (etaf-telega-model-help model))
           :search (and model (etaf-telega-model-searching model)
                        (etaf-telega-model-search model))
           :chat-search (and model (etaf-telega-model-chat-search model))

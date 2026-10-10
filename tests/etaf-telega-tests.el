@@ -209,6 +209,30 @@ fake backend's send responder."
     (etaf-telega-test--keys ">")
     (should (equal (etaf-telega-test--info :selected) 12))))
 
+(ert-deftest etaf-telega-tests-help-sheet-lists-shortcuts-and-closes ()
+  "? opens the shortcut sheet, its tabs switch screens and it closes again."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-test--keys "?")
+    (should (etaf-telega-test--info :help))
+    (let ((text (etaf-telega-test--text)))
+      (should (string-search "键盘快捷键" text))
+      (should (string-search "会话列表" text))
+      (should (string-search "M-g u" text)))
+    ;; The composer tab lists the composer keys instead.
+    (let* ((runtime (etaf-runtime-for-buffer buffer))
+           (host (cl-find-if (lambda (entry)
+                               (equal (plist-get (cdr entry) :aria-label) "输入框"))
+                             (etaf-runtime-host-props-entries runtime))))
+      (should host)
+      (etaf-dispatch-event runtime (car host) 'press)
+      (sit-for 0.2)
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "C-c C-a" text))
+        (should (string-search "C-c C-t" text))
+        (should-not (string-search "M-g u" text))))
+    (etaf-telega-test--keys "?")
+    (should-not (etaf-telega-test--info :help))))
+
 (ert-deftest etaf-telega-tests-composer-option-keys-reach-their-toggles ()
   "The composer's option keys toggle silent, preview and markdown.
 These keys share the `C-c C-' prefix, so a new binding must not shadow an

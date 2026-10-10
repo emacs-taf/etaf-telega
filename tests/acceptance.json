@@ -71,6 +71,11 @@
    "purpose": "Each composer option key toggles its own send option."
   },
   {
+   "name": "etaf-telega-tests-help-sheet-lists-shortcuts-and-closes",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "The ? shortcut sheet opens on both screens and lists their keys."
+  },
+  {
    "name": "etaf-telega-tests-composer-sends-and-clears-on-ack",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Typing in the composer sends the text and clears it after acceptance."
