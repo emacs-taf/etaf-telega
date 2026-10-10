@@ -40,8 +40,6 @@
         :draft (etaf-ref "" :name 'etaf-telega-draft)
         :screen (etaf-ref 'root :name 'etaf-telega-screen)
         :viewer (etaf-ref nil :name 'etaf-telega-viewer)
-        :help (etaf-ref nil :name 'etaf-telega-help)
-        :help-tab (etaf-ref 'list :name 'etaf-telega-help-tab)
         :search (etaf-ref "" :name 'etaf-telega-search)
         :searching (etaf-ref nil :name 'etaf-telega-searching)
         :search-kind (etaf-ref 'all :name 'etaf-telega-search-kind)
@@ -196,22 +194,6 @@ already loaded pages, so pages merge by id."
 (defun etaf-telega-model-set-viewer (model viewer)
   "Set MODEL's media VIEWER state; nil closes the viewer."
   (setf (etaf-value (plist-get model :viewer)) viewer))
-
-(defun etaf-telega-model-help (model)
-  "Return non-nil while MODEL shows the keyboard shortcut reference."
-  (etaf-value (plist-get model :help)))
-
-(defun etaf-telega-model-set-help (model help)
-  "Show MODEL's shortcut reference when HELP is non-nil, hide it otherwise."
-  (setf (etaf-value (plist-get model :help)) (and help t)))
-
-(defun etaf-telega-model-help-tab (model)
-  "Return the shortcut sheet's active section key."
-  (or (etaf-value (plist-get model :help-tab)) 'list))
-
-(defun etaf-telega-model-set-help-tab (model key)
-  "Show the shortcut sheet's section KEY."
-  (setf (etaf-value (plist-get model :help-tab)) key))
 
 (defun etaf-telega-model-set-compose (model compose)
   "Set MODEL's compose state to COMPOSE, a `(:kind :target)' plist or nil."

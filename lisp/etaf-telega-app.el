@@ -94,12 +94,6 @@ return nothing until the server synchronized it.")
 (defconst etaf-telega--history-retry-delay 0.8
   "Seconds before an empty history answer is asked again.")
 
-(defvar-local etaf-telega--root-active nil
-  "Non-nil while the client buffer shows the conversation list.")
-
-(defvar-local etaf-telega--chat-active nil
-  "Non-nil while the client buffer shows a chat.")
-
 ;;;; Helpers
 
 (defun etaf-telega--model ()
@@ -350,33 +344,28 @@ the newest message of the reported page, which is what a date jump wants."
 
 ;;;; Point selection
 
-(defun etaf-telega--focus-clicked-pane ()
-  "Give keys to the pane a mouse click moved point into.
+(defun etaf-telega--follow-point-pane ()
+  "Make the screen follow point into the other pane of a split layout.
 Beside each other, the list and chat panes both stay visible, so the
-screen only records which of them owns the keys."
-  (when-let* (((eq this-command 'mouse-set-point))
-              ((etaf-telega-model-chat etaf-telega--model))
-              (runtime (etaf-telega--runtime (current-buffer)))
-              (pane (etaf-host-ref-at runtime (point)
-                                      (lambda (ref)
-                                        (memq ref '(telega-list-pane telega-chat-pane))))))
-    (let ((screen (if (eq pane 'telega-list-pane) 'root 'chat)))
-      (unless (eq screen (etaf-telega-model-screen etaf-telega--model))
-        (etaf-telega--show-screen screen)))))
+screen only records which of them point, and so the keys, are in."
+  (when-let* (((etaf-telega-model-chat etaf-telega--model))
+              (screen (etaf-telega--pane-at-point)))
+    (unless (eq screen (etaf-telega-model-screen etaf-telega--model))
+      (etaf-telega--show-screen screen))))
 
 (defun etaf-telega--track-point ()
   "Select the conversation or message under point."
   (when etaf-telega--model
-    (etaf-telega--focus-clicked-pane)
-    (cond
-     (etaf-telega--root-active
-      (when-let* ((id (etaf-telega--row-at 'chat)))
-        (unless (equal id (etaf-telega-model-cursor etaf-telega--model))
-          (etaf-telega-model-set-cursor etaf-telega--model id))))
-     (etaf-telega--chat-active
-      (let ((id (etaf-telega--row-at 'message)))
-        (unless (equal id (etaf-telega-model-selected-id etaf-telega--model))
-          (etaf-telega-model-set-selected etaf-telega--model id)))))))
+    (etaf-telega--follow-point-pane)
+    (pcase (etaf-telega-model-screen etaf-telega--model)
+      ('root
+       (when-let* ((id (etaf-telega--row-at 'chat)))
+         (unless (equal id (etaf-telega-model-cursor etaf-telega--model))
+           (etaf-telega-model-set-cursor etaf-telega--model id))))
+      ('chat
+       (let ((id (etaf-telega--row-at 'message)))
+         (unless (equal id (etaf-telega-model-selected-id etaf-telega--model))
+           (etaf-telega-model-set-selected etaf-telega--model id)))))))
 
 (defun etaf-telega--step (ids current delta)
   "Return the id DELTA steps from CURRENT in IDS, clamped to its ends.
@@ -609,97 +598,119 @@ Each command operates on the conversation under point.")
   "Keys of the chat buffer that run Telega's own message commands.
 Each command operates on the message under point.")
 
-(defun etaf-telega--native-map (keys map)
-  "Bind every key of KEYS in MAP to `etaf-telega-native'."
-  (dolist (entry keys)
-    (define-key map (kbd (car entry)) #'etaf-telega-native))
-  map)
+(defun etaf-telega--telega-command (command)
+  "Return a command calling Telega's COMMAND, which loads with Telega."
+  (lambda () (interactive) (call-interactively command)))
 
-(defvar etaf-telega-root-fastnav-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "u") #'etaf-telega-next-unread-chat)
-    map)
-  "Conversation navigation under `M-g', after Telega's root fastnav keys.")
+(defun etaf-telega--native-keys (keys)
+  "Return `:keys' entries running each Telega command of KEYS at point."
+  (mapcar (lambda (entry)
+            (let ((command (cdr entry)))
+              (list (car entry)
+                    (lambda () (interactive) (etaf-telega-native command))
+                    (format "Telega：%s" command))))
+          keys))
 
-(defvar etaf-telega-root-map
-  (let ((map (make-sparse-keymap)))
-    (etaf-telega--native-map etaf-telega-root-native-keys map)
-    (dolist (pair '(("n" . etaf-telega-next-chat) ("p" . etaf-telega-previous-chat)
-                    ("[" . etaf-telega-previous-filter)
-                    ("]" . etaf-telega-next-filter)
-                    ("j" . etaf-telega-chat-with)
-                    ("RET" . etaf-telega-open-chat)
-                    ("/" . etaf-telega-search) ("s" . etaf-telega-search)
-                    ("J" . telega-chat-join-by-link)
-                    ("N" . telega-chat-create) ("+" . telega-chat-create)
-                    ("T" . etaf-telega-toggle-theme)
-                    ;; A failed send can leave an upload pending; keep its
-                    ;; cancel reachable from the list side of a split layout.
-                    ("C-c C-u" . etaf-telega-cancel-upload)
-                    ("?" . etaf-telega-toggle-help)
-                    ("q" . bury-buffer) ("Q" . etaf-telega-close)))
-      (define-key map (kbd (car pair)) (cdr pair)))
-    (define-key map (kbd "M-g") etaf-telega-root-fastnav-map)
-    map)
-  "Keys of the conversation list screen, after Telega's root buffer.")
+(defun etaf-telega--client-keys ()
+  "Return the keys every screen of the client answers to."
+  `(("j" ,#'etaf-telega-chat-with "按名字打开会话")
+    ;; A failed send can leave an upload pending; keep its cancel
+    ;; reachable from every pane of a split layout.
+    ("C-c C-u" ,#'etaf-telega-cancel-upload "取消正在上传的文件")
+    ("Q" ,#'etaf-telega-close "关闭客户端")))
 
-(defvar etaf-telega-chat-fastnav-map
-  (let ((map (make-sparse-keymap)))
-    (dolist (pair '(("q" . etaf-telega-jump-quote)
-                    ("p" . etaf-telega-jump-pinned)
-                    ("d" . etaf-telega-jump-date)
-                    ("u" . etaf-telega-next-unread-message)
-                    ("m" . etaf-telega-next-mention)
-                    ("@" . etaf-telega-next-mention)
-                    ("o" . etaf-telega-next-outgoing)))
-      (define-key map (kbd (car pair)) (cdr pair)))
-    map)
-  "Message navigation under `M-g', after Telega's chat fastnav keys.")
+(defun etaf-telega--list-keys ()
+  "Return the conversation list pane's keys, after Telega's root buffer."
+  (append
+   (etaf-telega--native-keys etaf-telega-root-native-keys)
+   `(("n" ,#'etaf-telega-next-chat "下一个会话")
+     ("p" ,#'etaf-telega-previous-chat "上一个会话")
+     ("RET" ,#'etaf-telega-open-chat "打开会话")
+     ("[" ,#'etaf-telega-previous-filter "上一个分组")
+     ("]" ,#'etaf-telega-next-filter "下一个分组")
+     ("/" ,#'etaf-telega-search "搜索会话")
+     ("s" ,#'etaf-telega-search)
+     ("M-g u" ,#'etaf-telega-next-unread-chat "下一个未读会话")
+     ("J" ,(etaf-telega--telega-command 'telega-chat-join-by-link) "通过链接加入")
+     ("N" ,(etaf-telega--telega-command 'telega-chat-create) "新建会话")
+     ("+" ,(etaf-telega--telega-command 'telega-chat-create))
+     ("T" ,#'etaf-telega-toggle-theme "切换主题")
+     ("q" ,#'bury-buffer "隐藏客户端"))))
 
-(defvar etaf-telega-chat-map
-  (let ((map (make-sparse-keymap)))
-    (etaf-telega--native-map etaf-telega-chat-native-keys map)
-    (dolist (pair '(("n" . etaf-telega-next-message)
-                    ("p" . etaf-telega-previous-message)
-                    ("i" . etaf-telega-compose) ("RET" . etaf-telega-activate)
-                    ("j" . etaf-telega-chat-with)
-                    (">" . etaf-telega-jump-newest) ("M->" . etaf-telega-jump-newest)
-                    ("+" . etaf-telega-react)
-                    ("r" . etaf-telega-reply) ("e" . etaf-telega-edit)
-                    ("C-c C-k" . etaf-telega-cancel-compose)
-                    ("g" . etaf-telega-reload-chat) ("M-<" . etaf-telega-load-more)
-                    ("/" . etaf-telega-chat-search)
-                    ("C-c i" . etaf-telega-toggle-details)
-                    ("?" . etaf-telega-toggle-help)
-                    ("C-c C-s" . etaf-telega-toggle-silent)
-                    ("C-c C-l" . etaf-telega-toggle-link-preview)
-                    ("C-c C-m" . etaf-telega-toggle-markdown)
-                    ("C-c C-t" . etaf-telega-schedule-send)
-                    ("C-c C-d" . etaf-telega-clear-draft)
-                    ("C-c C-a" . etaf-telega-attach)
-                    ("C-c C-u" . etaf-telega-cancel-upload)
-                    ("q" . etaf-telega-back) ("Q" . etaf-telega-close)))
-      (define-key map (kbd (car pair)) (cdr pair)))
-    (define-key map (kbd "M-g") etaf-telega-chat-fastnav-map)
-    map)
-  "Keys of the chat screen, after Telega's chat buffer.")
+(defun etaf-telega--chat-keys ()
+  "Return the chat pane's keys, after Telega's chat buffer."
+  (append
+   (etaf-telega--native-keys etaf-telega-chat-native-keys)
+   `(("n" ,#'etaf-telega-next-message "下一条消息")
+     ("p" ,#'etaf-telega-previous-message "上一条消息")
+     ("RET" ,#'etaf-telega-activate "打开媒体或开始输入")
+     ("i" ,#'etaf-telega-compose "输入消息")
+     (">" ,#'etaf-telega-jump-newest "跳到最新消息")
+     ("M->" ,#'etaf-telega-jump-newest)
+     ("M-<" ,#'etaf-telega-load-more "加载更早的历史")
+     ("M-g q" ,#'etaf-telega-jump-quote "跳到被引用的消息")
+     ("M-g p" ,#'etaf-telega-jump-pinned "跳到置顶消息")
+     ("M-g d" ,#'etaf-telega-jump-date "跳到指定日期")
+     ("M-g u" ,#'etaf-telega-next-unread-message "下一条未读消息")
+     ("M-g m" ,#'etaf-telega-next-mention "下一条提及我的消息")
+     ("M-g @" ,#'etaf-telega-next-mention)
+     ("M-g o" ,#'etaf-telega-next-outgoing "下一条我发送的消息")
+     ("+" ,#'etaf-telega-react "表情回应")
+     ("r" ,#'etaf-telega-reply "回复")
+     ("e" ,#'etaf-telega-edit "编辑")
+     ("C-c C-k" ,#'etaf-telega-cancel-compose "取消回复或编辑")
+     ("g" ,#'etaf-telega-reload-chat "重新载入最新历史")
+     ("/" ,#'etaf-telega-chat-search "搜索消息")
+     ("C-c i" ,#'etaf-telega-toggle-details "显示或隐藏对话信息")
+     ("C-c C-s" ,#'etaf-telega-toggle-silent "静默发送")
+     ("C-c C-l" ,#'etaf-telega-toggle-link-preview "不带链接预览")
+     ("C-c C-m" ,#'etaf-telega-toggle-markdown "按 Markdown 解析")
+     ("C-c C-t" ,#'etaf-telega-schedule-send "定时发送")
+     ("C-c C-d" ,#'etaf-telega-clear-draft "放弃草稿")
+     ("C-c C-a" ,#'etaf-telega-attach "发送文件")
+     ("C-c C-e" ,#'etaf-telega-open-emoji "表情选择器")
+     ("C-c C-p" ,#'etaf-telega-open-stickers "贴纸选择器")
+     ("q" ,#'etaf-telega-back "返回会话列表"))))
 
-(defun etaf-telega--install-keys ()
-  "Give the current screen's keys precedence over the mounted buffer's keys."
-  (setq-local emulation-mode-map-alists
-              (cons (list (cons 'etaf-telega--root-active etaf-telega-root-map)
-                          (cons 'etaf-telega--chat-active etaf-telega-chat-map))
-                    emulation-mode-map-alists)))
+(defun etaf-telega--details-keys ()
+  "Return the details pane's keys."
+  `(("C-c i" ,#'etaf-telega-toggle-details "隐藏对话信息")
+    ("q" ,#'etaf-telega-back "返回会话列表")))
 
-;;;; Conversation list commands
+(defconst etaf-telega--screen-panes
+  '((root . telega-list-pane) (chat . telega-chat-pane))
+  "The pane whose keys answer on each screen.")
 
-(defun etaf-telega--show-screen (screen)
-  "Show SCREEN, `root' or `chat', and give its keys precedence."
-  (etaf-telega-model-set-screen (etaf-telega--model) screen)
+(defun etaf-telega--pane-at-point ()
+  "Return the screen whose pane holds point, or nil."
+  (when-let* ((runtime (etaf-telega--runtime (current-buffer)))
+              (pane (etaf-host-ref-at runtime (point)
+                                      (lambda (ref)
+                                        (rassq ref etaf-telega--screen-panes)))))
+    (car (rassq pane etaf-telega--screen-panes))))
+
+(defun etaf-telega--enter-pane (screen)
+  "Move point to SCREEN's entry: the list's conversation or the composer.
+Keys answer in the pane holding point, so a screen switch moves point too."
   (when (buffer-live-p etaf-telega--buffer)
     (with-current-buffer etaf-telega--buffer
-      (setq etaf-telega--root-active (eq screen 'root)
-            etaf-telega--chat-active (eq screen 'chat)))))
+      (let ((cursor (and etaf-telega--model
+                         (etaf-telega-model-cursor etaf-telega--model))))
+        (or (if (eq screen 'chat)
+                (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer)
+              (and cursor
+                   (etaf-telega--goto-ref etaf-telega--buffer
+                                          (etaf-telega--ref 'chat cursor))))
+            (etaf-telega--goto-ref etaf-telega--buffer
+                                   (cdr (assq screen etaf-telega--screen-panes))))))))
+
+(defun etaf-telega--show-screen (screen)
+  "Show SCREEN, `root' or `chat', with point in its pane once painted.
+Point already in SCREEN's pane of a split layout stays where it is."
+  (let ((entered (eq (etaf-telega--pane-at-point) screen)))
+    (etaf-telega-model-set-screen (etaf-telega--model) screen)
+    (unless entered
+      (etaf-next-tick (lambda () (etaf-telega--enter-pane screen))))))
 
 (defun etaf-telega-open-chat (id)
   "Open the conversation with ID on the chat screen."
@@ -901,21 +912,15 @@ messages the client has not loaded.  A stale answer is dropped."
       (user-error "先打开一个对话"))
     (etaf-telega-model-set-details model (not (etaf-telega-model-details model)))))
 
-(defun etaf-telega-close-help ()
-  "Hide the keyboard shortcut reference."
-  (interactive)
-  (etaf-telega-model-set-help (etaf-telega--model) nil))
-
-(defun etaf-telega-toggle-help ()
-  "Show or hide the keyboard shortcut reference (?).
-The sheet lists every key the client and Telega answer to, so the client
-can be used without reading its manual."
-  (interactive)
-  (let ((model (etaf-telega--model)))
-    (unless model (user-error "Telegram 客户端没有打开"))
-    (when (etaf-text-input-active-p (etaf-telega--runtime etaf-telega--buffer))
-      (etaf-text-input-end t))
-    (etaf-telega-model-set-help model (not (etaf-telega-model-help model)))))
+(defun etaf-telega--open-palette ()
+  "Open the ETAF palette of the client's keys after the current event.
+The bar button and menus run it; `?' opens the same palette directly."
+  (run-at-time 0 nil
+               (lambda ()
+                 (when-let* ((runtime (etaf-telega--runtime etaf-telega--buffer)))
+                   (when (etaf-text-input-active-p runtime)
+                     (etaf-text-input-end t))
+                   (etaf-palette runtime)))))
 
 (defun etaf-telega--list-menu-select (key)
   "Run the list menu item KEY.
@@ -923,7 +928,7 @@ Commands that remount or close the client run after the menu's own event."
   (pcase key
     ('create (call-interactively #'telega-chat-create))
     ('join (call-interactively #'telega-chat-join-by-link))
-    ('help (run-at-time 0 nil #'etaf-telega-toggle-help))
+    ('help (etaf-telega--open-palette))
     ('theme (run-at-time 0 nil #'etaf-telega-toggle-theme))
     ('close (run-at-time 0 nil #'etaf-telega-close))))
 
@@ -934,7 +939,7 @@ Commands that remount or close the client run after the menu's own event."
     ('search (etaf-telega-chat-search))
     ('newest (etaf-telega-jump-newest))
     ('reload (etaf-telega-reload-chat))
-    ('help (run-at-time 0 nil #'etaf-telega-toggle-help))
+    ('help (etaf-telega--open-palette))
     ('back (etaf-telega-back))))
 
 ;;;; Filters
@@ -970,16 +975,20 @@ Commands that remount or close the client run after the menu's own event."
 
 (defun etaf-telega-native (command)
   "Run Telega's COMMAND on the conversation or message under point.
-Called from a key of `etaf-telega-root-native-keys' or
-`etaf-telega-chat-native-keys', COMMAND is that key's command."
+On the chat screen COMMAND receives the message under point, on the list
+the conversation under point.  The keys of `etaf-telega-root-native-keys'
+and `etaf-telega-chat-native-keys' call it with their command."
   (interactive
-   (let ((key (key-description (this-command-keys-vector))))
-     (list (or (cdr (assoc key (if etaf-telega--chat-active
-                                   etaf-telega-chat-native-keys
-                                 etaf-telega-root-native-keys)))
-               (user-error "%s 没有对应的 Telega 命令" key)))))
+   (let ((keys (if (eq (etaf-telega-model-screen (etaf-telega--model)) 'chat)
+                   etaf-telega-chat-native-keys
+                 etaf-telega-root-native-keys)))
+     (list (intern (completing-read "Telega 命令："
+                                    (delete-dups
+                                     (mapcar (lambda (entry) (symbol-name (cdr entry)))
+                                             keys))
+                                    nil t)))))
   (let ((model (etaf-telega--model)))
-    (if etaf-telega--chat-active
+    (if (eq (etaf-telega-model-screen model) 'chat)
         (let ((id (or (etaf-telega--row-at 'message)
                       (user-error "先把光标移到一条消息上"))))
           (etaf-telega-backend-native etaf-telega--backend command
@@ -1709,7 +1718,6 @@ Leaving an edit restores the draft captured before editing."
           :draft (and model (etaf-telega-model-draft model))
           :history-end etaf-telega--history-end
           :viewer (plist-get (and model (etaf-telega-model-viewer model)) :id)
-          :help (and model (etaf-telega-model-help model))
           :search (and model (etaf-telega-model-searching model)
                        (etaf-telega-model-search model))
           :chat-search (and model (etaf-telega-model-chat-search model))
@@ -1750,7 +1758,6 @@ Leaving an edit restores the draft captured before editing."
       (etaf-mount buffer (etaf-view (etaf-telega-app :model model)))
       (with-current-buffer buffer
         (setq-local cursor-type nil)
-        (etaf-telega--install-keys)
         (add-hook 'post-command-hook #'etaf-telega--track-point nil t)
         (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t))
       (etaf-telega--show-screen 'root)

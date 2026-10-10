@@ -71,9 +71,14 @@
    "purpose": "Each composer option key toggles its own send option."
   },
   {
-   "name": "etaf-telega-tests-help-sheet-lists-shortcuts-and-closes",
+   "name": "etaf-telega-tests-palette-lists-and-runs-the-pane-keys",
    "file": "tests/etaf-telega-tests.el",
-   "purpose": "The ? shortcut sheet opens on both screens and lists their keys."
+   "purpose": "? opens the palette of the list or chat keys with their descriptions, including Telega's own commands, and runs the chosen one."
+  },
+  {
+   "name": "etaf-telega-tests-split-layout-keys-follow-the-pane-at-point",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "In the split layout the list and chat keys answer in the pane holding point, and opening or leaving a chat moves point into its pane."
   },
   {
    "name": "etaf-telega-tests-composer-sends-and-clears-on-ack",

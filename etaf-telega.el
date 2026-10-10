@@ -31,6 +31,14 @@
 ;; `etaf-telega-root-native-keys' and `etaf-telega-chat-native-keys' run
 ;; Telega's own commands on the conversation or message under point.
 ;;
+;; Keys are ETAF Host keys of the pane holding point: the list, the chat or
+;; the details pane, after the keys every pane shares (j, Q and C-c C-u).
+;; Opening or leaving a conversation moves point into the screen's pane, and
+;; in a split layout moving point into the other pane switches the screen.
+;; Tab and the arrows reach every control through ETAF focus, and ? opens
+;; the ETAF palette listing the reachable keys with what they do; the app
+;; bar's keyboard button and the menus' 键盘快捷键 item open it too.
+;;
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
 ;; Mount the client in its own buffer, show the conversation list and return
@@ -140,8 +148,10 @@
 ;; for the message under point (+).  Reactions show under the message, and
 ;; clicking one toggles it too.
 ;; Function: etaf-telega-native (command)
-;; Run Telega's COMMAND on the conversation or message under point.  Keys of
-;; the native key variables call it with their command.
+;; Run Telega's COMMAND on the message under point on the chat screen, or on
+;; the conversation under point on the list.  Keys of the native key
+;; variables call it with their command; interactively choose the command
+;; among the current screen's native commands.
 ;;
 ;; Function: etaf-telega-compose ()
 ;; Move point into the composer and begin editing it (i).  Return submits;
@@ -217,11 +227,6 @@
 ;; Function: etaf-telega-toggle-theme ()
 ;; Switch the open client between the dark and light palettes and repaint (T
 ;; on the list).
-;; Function: etaf-telega-toggle-help ()
-;; Show or hide the keyboard shortcut sheet over the client (?); the sheet
-;; lists every key the client and Telega answer to on the current screen.
-;; Function: etaf-telega-close-help ()
-;; Hide the shortcut sheet, from its close control or the modal's Escape.
 ;; Function: etaf-telega-color (key)
 ;; Return the active palette's color for KEY; every view reads its colors
 ;; through this function so a theme switch stays consistent.
@@ -232,12 +237,17 @@
 ;; `light' pin a maintained palette.
 ;; Variable: etaf-telega-buffer-name
 ;; Buffer name of the mounted client.
+;; Variable: etaf-telega-split-columns
+;; Narrowest window width, in columns, that shows the conversation list
+;; beside the open chat; narrower windows show one screen at a time.
 ;; Variable: etaf-telega-root-native-keys
 ;; Alist of (KEY . COMMAND) on the conversation list that run Telega's chat
-;; commands on the conversation under point.  Set it before loading.
+;; commands on the conversation under point.  The list reads it when it
+;; renders, so set it before opening the client.
 ;; Variable: etaf-telega-chat-native-keys
 ;; Alist of (KEY . COMMAND) on a conversation that run Telega's message
-;; commands on the message under point.  Set it before loading.
+;; commands on the message under point.  The chat reads it when it renders,
+;; so set it before opening the client.
 ;;
 ;; Variable: etaf-telega-backend-create-function
 ;; Return a fresh backend for `etaf-telega-open'.  Bind it to a fake backend
