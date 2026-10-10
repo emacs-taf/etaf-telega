@@ -689,18 +689,25 @@ Each command operates on the message under point.")
                                         (rassq ref etaf-telega--screen-panes)))))
     (car (rassq pane etaf-telega--screen-panes))))
 
+(defun etaf-telega--focus-ref (buffer ref)
+  "Move point and keyboard focus to REF, so Tab continues from it."
+  (when (etaf-telega--goto-ref buffer ref)
+    (etaf-focus (etaf-telega--runtime buffer) ref)
+    t))
+
 (defun etaf-telega--enter-pane (screen)
   "Move point to SCREEN's entry: the list's conversation or the composer.
-Keys answer in the pane holding point, so a screen switch moves point too."
+Keys answer in the pane holding point, so a screen switch moves point and
+focus there too."
   (when (buffer-live-p etaf-telega--buffer)
     (with-current-buffer etaf-telega--buffer
       (let ((cursor (and etaf-telega--model
                          (etaf-telega-model-cursor etaf-telega--model))))
         (or (if (eq screen 'chat)
-                (etaf-telega--goto-ref etaf-telega--buffer 'telega-composer)
+                (etaf-telega--focus-ref etaf-telega--buffer 'telega-composer)
               (and cursor
-                   (etaf-telega--goto-ref etaf-telega--buffer
-                                          (etaf-telega--ref 'chat cursor))))
+                   (etaf-telega--focus-ref etaf-telega--buffer
+                                           (etaf-telega--ref 'chat cursor))))
             (etaf-telega--goto-ref etaf-telega--buffer
                                    (cdr (assq screen etaf-telega--screen-panes))))))))
 
@@ -1694,9 +1701,9 @@ Leaving an edit restores the draft captured before editing."
     (etaf-telega--save-current-draft)
     (etaf-telega--show-screen 'root)
     (or (and (etaf-telega-model-cursor model)
-             (etaf-telega--goto-ref etaf-telega--buffer
-                                    (etaf-telega--ref 'chat
-                                                      (etaf-telega-model-cursor model))))
+             (etaf-telega--focus-ref etaf-telega--buffer
+                                     (etaf-telega--ref 'chat
+                                                       (etaf-telega-model-cursor model))))
         (with-current-buffer etaf-telega--buffer (goto-char (point-min))))))
 
 ;;;; Information, theme and lifecycle

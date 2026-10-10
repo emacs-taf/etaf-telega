@@ -80,6 +80,11 @@
    "file": "tests/etaf-telega-tests.el",
    "purpose": "In the split layout the list and chat keys answer in the pane holding point, and opening or leaving a chat moves point into its pane."
   },
+    {
+      "name": "etaf-telega-tests-split-layout-tab-and-ret-move-between-panes",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "Keyboard focus on a list row enters the chat pane with RET, where the chat keys answer, and q returns focus to that row."
+    },
   {
    "name": "etaf-telega-tests-composer-sends-and-clears-on-ack",
    "file": "tests/etaf-telega-tests.el",

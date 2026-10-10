@@ -35,7 +35,9 @@
 ;; the details pane, after the keys every pane shares (j, Q and C-c C-u).
 ;; Opening or leaving a conversation moves point into the screen's pane, and
 ;; in a split layout moving point into the other pane switches the screen.
-;; Tab and the arrows reach every control through ETAF focus, and ? opens
+;; Tab and the arrows reach every control through ETAF focus; the
+;; conversation list is one Tab stop roved with the arrows, and RET on a
+;; conversation carries focus into its composer while q brings it back.  ? opens
 ;; the ETAF palette listing the reachable keys with what they do; the app
 ;; bar's keyboard button and the menus' 键盘快捷键 item open it too.
 ;;

@@ -261,6 +261,25 @@ fake backend's send responder."
       (etaf-telega-test--keys "p")
       (should (equal (etaf-telega-test--info :cursor) 2)))))
 
+(ert-deftest etaf-telega-tests-split-layout-tab-and-ret-move-between-panes ()
+  "From a focused list row, RET carries focus into the chat; q brings it back."
+  (let ((etaf-telega-split-columns 40))
+    (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+      (let ((runtime (etaf-runtime-for-buffer buffer)))
+        (dotimes (_ 6)
+          (unless (string-prefix-p "chat:" (format "%s" (etaf-focused-host-ref runtime)))
+            (etaf-telega-test--keys "TAB")))
+        (should (equal (format "%s" (etaf-focused-host-ref runtime)) "chat:1"))
+        (etaf-telega-test--keys "<down> <up> RET")
+        (should (equal (etaf-telega-test--info :chat) 1))
+        (should (eq (etaf-focused-host-ref runtime) 'telega-composer))
+        ;; The chat pane's keys answer, not the list row that was focused.
+        (etaf-telega-test--keys "p")
+        (should (equal (etaf-telega-test--info :selected) 12))
+        (etaf-telega-test--keys "q")
+        (should (eq (etaf-telega-test--info :screen) 'root))
+        (should (equal (format "%s" (etaf-focused-host-ref runtime)) "chat:1"))))))
+
 (ert-deftest etaf-telega-tests-composer-option-keys-reach-their-toggles ()
   "The composer's option keys toggle silent, preview and markdown.
 These keys share the `C-c C-' prefix, so a new binding must not shadow an

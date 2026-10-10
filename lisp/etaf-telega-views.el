@@ -560,7 +560,7 @@ column separates rows without crossing the avatars."
                                      (etaf-telega-color :bg))
                  :hover-style (unless current
                                 (list :background-color (etaf-telega-color :surface-2)))
-                 :role 'button :tab-index 0
+                 :role 'button :tab-index 0 :aria-selected (and current t)
                  :on-press (lambda () (etaf-telega-open-chat id)))
      (list
       (etaf-node 'etaf-avatar
@@ -721,7 +721,7 @@ A two-line avatar sits beside the title over its member count or presence."
                                      (etaf-telega-color :bg))
                  :hover-style (unless current
                                 (list :background-color (etaf-telega-color :surface-2)))
-                 :role 'button :tab-index 0
+                 :role 'button :tab-index 0 :aria-selected (and current t)
                  :on-press (lambda () (etaf-telega-open-chat id)))
      (list (etaf-node 'etaf-avatar
                       (list :name title :initials (etaf-telega--initial title)
@@ -751,11 +751,15 @@ conversations.  SELECTED is the cursor selector."
   (let* ((query (string-trim (or (etaf-value (plist-get model :search)) "")))
          (chats (etaf-value (plist-get model :chats)))
          (results (etaf-telega--list-chats model))
-         (rows (mapcar (lambda (chat)
-                         (etaf-view (etaf-telega-search-row :key (plist-get chat :id)
-                                                            :chat chat
-                                                            :selected selected)))
-                       results)))
+         (rows (when results
+                 (list (etaf-node
+                        'flex (list :flex-direction 'column :width 'stretch
+                                    :focus-group 'vertical)
+                        (mapcar (lambda (chat)
+                                  (etaf-view (etaf-telega-search-row
+                                              :key (plist-get chat :id)
+                                              :chat chat :selected selected)))
+                                results))))))
     (etaf-node
      'flex (list :flex-direction 'column :width 'stretch :flex-grow 1
                  :flex-basis '(lh 0) :min-height '(lh 0))
@@ -783,7 +787,8 @@ conversations.  SELECTED is the cursor selector."
                   (list (etaf-telega--section-title "常用联系人")
                         (etaf-node 'flex (list :flex-direction 'row :width 'stretch
                                                :padding '((lh 1) (ch 1))
-                                               :column-gap '(ch 2))
+                                               :column-gap '(ch 2)
+                                               :focus-group 'horizontal)
                                    (mapcar #'etaf-telega--frequent-contact frequent))))
                 (list (etaf-telega--section-title
                        "最近" (and results #'etaf-telega-search-clear-recent) "清除"))
@@ -822,7 +827,7 @@ replace the tabs and the list."
          'box (etaf-telega--scroll-body 'telega-list)
          (list
           (etaf-view
-           (flex :flex-direction 'column :width 'stretch
+           (flex :flex-direction 'column :width 'stretch :focus-group 'vertical
              (expr
               (let ((chats (etaf-telega--list-chats model)))
                 (if chats
