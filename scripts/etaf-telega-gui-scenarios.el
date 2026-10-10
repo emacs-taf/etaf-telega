@@ -183,6 +183,42 @@ Wait briefly for a layout or menu change to finish rendering the control."
   (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
          (list command 1 message)))
 
+(defvar etaf-telega-gui--walk nil
+  "Focus refs visited by the last Tab walk.")
+
+(defun etaf-telega-gui--tab-walk ()
+  "Press TAB until focus cycles back, restore it and return the visited refs."
+  (let* ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer))
+         (original (etaf-focused-host-ref runtime))
+         (start (progn (execute-kbd-macro (kbd "TAB"))
+                       (etaf-focused-host-ref runtime)))
+         (walk (list start)))
+    (catch 'done
+      (dotimes (_ 60)
+        (execute-kbd-macro (kbd "TAB"))
+        (let ((ref (etaf-focused-host-ref runtime)))
+          (push ref walk)
+          (when (equal ref start) (throw 'done nil)))))
+    ;; Hand focus back to the stop focused before the walk, if any.
+    (when original (etaf-focus runtime original))
+    (setq etaf-telega-gui--walk (nreverse walk))))
+
+(defun etaf-telega-gui--walk-closed-p (minimum)
+  "Return non-nil when the last walk cycled through MINIMUM distinct stops."
+  (let ((walk etaf-telega-gui--walk))
+    (and (car walk) (equal (car walk) (car (last walk)))
+         (>= (length (delete-dups (copy-sequence (butlast walk)))) minimum))))
+
+(defun etaf-telega-gui--palette-labels ()
+  "Open the `?' palette, cancel it, and return its labels."
+  (let (names)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq names (all-completions "" collection))
+                 (keyboard-quit))))
+      (condition-case nil (execute-kbd-macro (kbd "?")) (quit nil)))
+    names))
+
 (defun etaf-telega-gui-run (directory)
   "Run the offline product workflow and save evidence to DIRECTORY."
   (let* ((original-frame (selected-frame))
@@ -221,6 +257,25 @@ Wait briefly for a layout or menu change to finish rendering the control."
               (lambda (_) (and (eq (plist-get (etaf-telega-gui--info) :screen) 'root)
                                (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
               t)
+             (etaf-telega-gui--action
+              "root-tab-walk"
+              (lambda (_)
+                (etaf-telega-gui--tab-walk)
+                ;; The walk moved the list cursor; Shift-Tab back to the
+                ;; first row so the next actions start from it.
+                (let ((runtime (etaf-runtime-for-buffer etaf-telega-gui--buffer)))
+                  (dotimes (_ 20)
+                    (unless (equal (format "%s" (etaf-focused-host-ref runtime))
+                                   "chat:1")
+                      (execute-kbd-macro (kbd "<backtab>"))))))
+              (lambda (_) (and (etaf-telega-gui--walk-closed-p 3)
+                               (memq 'telega-search etaf-telega-gui--walk)
+                               (eq (plist-get (etaf-telega-gui--info) :screen) 'root)
+                               (equal (plist-get (etaf-telega-gui--info) :cursor) 1)))
+              t)
+             (etaf-telega-gui--action
+              "root-palette" #'ignore
+              (lambda (_) (> (length (etaf-telega-gui--palette-labels)) 5)))
              (etaf-telega-gui--action
               "filter-key-next" (lambda (_) (execute-kbd-macro (kbd "] ] ]")))
               (lambda (_)
@@ -645,7 +700,12 @@ Wait briefly for a layout or menu change to finish rendering the control."
                 (let ((info (etaf-telega-gui--info)))
                   (and (eq (plist-get info :screen) 'chat)
                        (equal (plist-get info :chat) 2)
-                       (string-match-p "工作群" (etaf-telega-gui--text)))))))
+                       (string-match-p "工作群" (etaf-telega-gui--text))))))
+             (etaf-telega-gui--action
+              "chat-tab-walk" (lambda (_) (etaf-telega-gui--tab-walk))
+              (lambda (_) (and (etaf-telega-gui--walk-closed-p 3)
+                               (memq 'telega-composer etaf-telega-gui--walk)))
+              t))
             (mapcar
              (lambda (size)
                (etaf-telega-gui--action
