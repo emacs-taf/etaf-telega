@@ -126,3 +126,19 @@ make clean
 - TDLib 同一数据目录只允许一个实例拥有。客户端关闭不等于注销。
 - 升级或迁移前停服并备份完整目录（含 WAL），不要拿唯一的生产登录库做实验。
 - 本仓库不复制消息数据库；界面所需的状态只在内存里投影。
+- 独立 GUI 实例共享同一数据目录时，收尾要先关上一个实例，再开下一个（两个 TDLib 同时在线有损坏风险）。
+
+真机验收时踩过的 Telega/TDLib 事实（不要再当作 bug 重查）：
+
+- **发附件**：`sendMessage` 的回调返回的是本地消息（id 与最终消息不同），而 Telega 只在**确认后**
+  才触发 `telega-chat-post-message-hook`。回调里上报 `:sent` 会让每条附件显示两遍；正确做法是回调只记录
+  上传（供取消用），确认从钩子里按文件名匹配后上报。
+- **语音**：`inputMessageVoiceNote` 的 `:voice_note` 必须是 `inputVoiceNote{voice_note,duration,waveform}`
+  对象，不能直接放 `inputFileLocal`——后者让 TDLib 回 `400 InputFile is not specified`，界面上表现为
+  永远停在「正在上传」；`duration` 要为正（本仓库用 ffprobe 取，取不到就回退 1 秒）。
+- **置顶**：TDLib 只发 `updateMessageIsPinned`，本版 Telega 不更新会话缓存里的 `pinned_message_id`，
+  所以会话内新置顶后要经 `searchMessagesFilterPinned` 现查，不能信缓存。
+- **已读**：打开会话会把加载的那一页标为已读（`telega--viewMessages`），手动标为未读的会话
+  （`unread_count>0` 但读边界已在最新）用 `M-g u` 会正确地报「没有未读」。
+- **清理测试数据**：媒体消息没有文本，服务端搜索按文本找会漏；按「日期 = 今天且 outgoing」的媒体
+  消息删除（或按模型里的 `:file :name` 匹配）才能清干净。
