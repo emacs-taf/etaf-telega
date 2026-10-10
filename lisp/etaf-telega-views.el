@@ -1445,6 +1445,11 @@ two-finger swipe goes back from a chat or switches filter tabs."
                                    :width (list 'ch etaf-telega--details-pane-columns))))))))))
     (etaf-node
      'flex (list :flex-direction 'column :width 'stretch :height '(vh 100)
+                 ;; The palette owns the inherited ink: without this, plain
+                 ;; text such as the composer falls back to the frame's
+                 ;; default foreground, which the light palette can render
+                 ;; invisible on its own surfaces.
+                 :color (etaf-telega-color :ink)
                  :background-color (etaf-telega-color :bg)
                  :on-swipe #'etaf-telega-swipe)
      (list (etaf-node 'flex (list :flex-direction 'row :width 'stretch
