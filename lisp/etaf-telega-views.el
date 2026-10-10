@@ -1534,22 +1534,17 @@ takes the rest of the line and wraps when the dialog narrows."
                                                (list label)))))))
 
 (defun etaf-telega--shortcut-tabs (model tab)
-  "Return the shortcut sheet's tab row, marking TAB active.
-Each tab is a button that switches the sheet to its group."
-  (etaf-node 'flex (list :flex-direction 'row :width 'stretch
-                         :column-gap '(ch 1) :padding-bottom '(lh 1))
-             (mapcar
-              (lambda (group)
-                (let ((key (plist-get group :key)))
-                  (etaf-node 'etaf-button
-                             (list :label (plist-get group :title)
-                                   :aria-label (plist-get group :title)
-                                   :variant (if (eq key tab) 'secondary 'ghost)
-                                   :ref (intern (format "etaf-telega-help-tab-%s" key))
-                                   :on-press (lambda ()
-                                               (etaf-telega-model-set-help-tab model key)))
-                             nil)))
-              etaf-telega--shortcut-groups)))
+  "Return the shortcut sheet's tab strip, marking TAB active.
+The strip is the catalog's `etaf-tabs' over the sheet's groups."
+  (etaf-node 'etaf-tabs
+             (list :items (mapcar (lambda (group)
+                                    (list :key (plist-get group :key)
+                                          :label (plist-get group :title)))
+                                  etaf-telega--shortcut-groups)
+                   :active tab
+                   :on-change (lambda (key)
+                                (etaf-telega-model-set-help-tab model key)))
+             nil))
 
 (etaf-define-component etaf-telega-help (&key model)
   "Show MODEL's keyboard shortcut reference as a modal dialog.
