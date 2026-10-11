@@ -210,17 +210,17 @@ fake backend's send responder."
     (should (equal (etaf-telega-test--info :selected) 12))))
 
 (defun etaf-telega-test--palette (choice)
-  "Press ? and return the palette's command names, running CHOICE."
+  "Return the palette's command names, running CHOICE."
   (let (names)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _)
                  (setq names (all-completions "" collection))
                  choice)))
-      (etaf-telega-test--keys "?"))
+      (etaf-palette (etaf-runtime-for-buffer (current-buffer))))
     names))
 
 (ert-deftest etaf-telega-tests-palette-lists-and-runs-the-pane-keys ()
-  "? lists the keys of the pane at point with what they do and runs one."
+  "The palette lists the keys of the pane at point with what they do and runs one."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
     (let ((names (etaf-telega-test--palette "下一个会话")))
       (should (member "下一个会话" names))
@@ -695,7 +695,7 @@ as Telega's own attachment commands; the draft still becomes the caption."
       (should (equal (etaf-telega-test--info :selected) 12)))))
 
 (ert-deftest etaf-telega-tests-pinned-jump-follows-the-backend-over-the-cache ()
-  "M-g p asks the backend, so pins made after loading still jump."
+  "C-c g p asks the backend, so pins made after loading still jump."
   (let* ((histories
           (etaf-telega-test--histories
            (list 1
@@ -728,16 +728,16 @@ as Telega's own attachment commands; the draft still becomes the caption."
         (should (equal (etaf-telega-test--info :selected) selected))))))
 
 (ert-deftest etaf-telega-tests-next-unread-chat-moves-to-the-unread-one ()
-  "M-g u on the list selects the next conversation with unread messages."
+  "C-c g u on the list selects the next conversation with unread messages."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
     (should (equal (etaf-telega-test--info :cursor) 1))
-    (etaf-telega-test--keys "M-g u")
+    (etaf-telega-test--keys "C-c g u")
     (should (equal (etaf-telega-test--info :cursor) 3))
-    (etaf-telega-test--keys "M-g u")
+    (etaf-telega-test--keys "C-c g u")
     (should (equal (etaf-telega-test--info :cursor) 1))))
 
 (ert-deftest etaf-telega-tests-fastnav-walks-unread-mentions-and-outgoing ()
-  "M-g u/m/o select unread, mentioning and outgoing messages."
+  "C-c g u/m/o select unread, mentioning and outgoing messages."
   (let* ((histories
           (etaf-telega-test--histories
            (list 1
@@ -749,13 +749,13 @@ as Telega's own attachment commands; the draft still becomes the caption."
          (backend (etaf-telega-test--backend nil histories)))
     (etaf-telega-test--with-client buffer backend
       (etaf-telega-open-chat 1)
-      (etaf-telega-test--keys "M-g u")
+      (etaf-telega-test--keys "C-c g u")
       (should (equal (etaf-telega-test--info :selected) 12))
-      (etaf-telega-test--keys "M-g u")
+      (etaf-telega-test--keys "C-c g u")
       (should (equal (etaf-telega-test--info :selected) 13))
-      (etaf-telega-test--keys "M-g m")
+      (etaf-telega-test--keys "C-c g m")
       (should (equal (etaf-telega-test--info :selected) 14))
-      (etaf-telega-test--keys "M-g o")
+      (etaf-telega-test--keys "C-c g o")
       (should (equal (etaf-telega-test--info :selected) 15)))))
 
 (ert-deftest etaf-telega-tests-day-separators-label-each-date ()

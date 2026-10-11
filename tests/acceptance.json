@@ -73,7 +73,7 @@
   {
    "name": "etaf-telega-tests-palette-lists-and-runs-the-pane-keys",
    "file": "tests/etaf-telega-tests.el",
-   "purpose": "? opens the palette of the list or chat keys with their descriptions, including Telega's own commands, and runs the chosen one."
+   "purpose": "The palette lists the list or chat keys with their descriptions, including Telega's own commands, and runs the chosen one."
   },
   {
    "name": "etaf-telega-tests-split-layout-keys-follow-the-pane-at-point",

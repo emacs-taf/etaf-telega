@@ -460,7 +460,7 @@ state instead of its prompt."
               (or (plist-get (etaf-value (plist-get model :me)) :name) ""))))
     (etaf-telega--bar
      (list (if (etaf-value (plist-get model :searching))
-               (etaf-telega--bar-button 'chevron-left "退出搜索 (C-g)"
+               (etaf-telega--bar-button 'chevron-left "退出搜索 (ESC)"
                                         #'etaf-telega-search-exit)
              (etaf-telega--bar-menu 'menu "菜单" (etaf-telega--list-menu-items me)
                                     #'etaf-telega--list-menu-select 'bottom-start))
@@ -495,7 +495,7 @@ title's place and the history shows only matching messages."
                                                   #'etaf-telega-back))))
     (if query
         (etaf-telega--bar
-         (list (etaf-telega--bar-button 'chevron-left "关闭搜索 (C-g)"
+         (list (etaf-telega--bar-button 'chevron-left "关闭搜索 (ESC)"
                                         #'etaf-telega-chat-search-exit)
                (etaf-view
                 (etaf-search-field :ref 'telega-chat-search

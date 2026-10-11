@@ -210,13 +210,15 @@ Wait briefly for a layout or menu change to finish rendering the control."
          (>= (length (delete-dups (copy-sequence (butlast walk)))) minimum))))
 
 (defun etaf-telega-gui--palette-labels ()
-  "Open the `?' palette, cancel it, and return its labels."
+  "Open the palette, cancel it, and return its labels."
   (let (names)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (_prompt collection &rest _)
                  (setq names (all-completions "" collection))
                  (keyboard-quit))))
-      (condition-case nil (execute-kbd-macro (kbd "?")) (quit nil)))
+      (condition-case nil
+          (etaf-palette (etaf-runtime-for-buffer (current-buffer)))
+        (quit nil)))
     names))
 
 (defun etaf-telega-gui-run (directory)
@@ -319,7 +321,7 @@ Wait briefly for a layout or menu change to finish rendering the control."
               "show-message" (lambda (_) (etaf-telega-show-message 12))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 12)))
              (etaf-telega-gui--action
-              "jump-pinned-key" (lambda (_) (execute-kbd-macro (kbd "M-g p")))
+              "jump-pinned-key" (lambda (_) (execute-kbd-macro (kbd "C-c g p")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
               "jump-date-key"
@@ -473,7 +475,7 @@ Wait briefly for a layout or menu change to finish rendering the control."
                 (equal (car (etaf-telega-backend-fake-natives etaf-telega-gui--backend))
                        '(telega-chat-leave 2 nil))))
              (etaf-telega-gui--action
-              "next-unread-chat" (lambda (_) (execute-kbd-macro (kbd "M-g u")))
+              "next-unread-chat" (lambda (_) (execute-kbd-macro (kbd "C-c g u")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :cursor) 3)))
              (etaf-telega-gui--action
               "reopen-restores-draft"
@@ -500,13 +502,13 @@ Wait briefly for a layout or menu change to finish rendering the control."
                   (and (not (plist-get info :editing))
                        (equal (plist-get info :draft) "光标\n第二行缩放中")))))
              (etaf-telega-gui--action
-              "next-unread-message" (lambda (_) (execute-kbd-macro (kbd "M-g u")))
+              "next-unread-message" (lambda (_) (execute-kbd-macro (kbd "C-c g u")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 13)))
              (etaf-telega-gui--action
-              "next-mention" (lambda (_) (execute-kbd-macro (kbd "M-g m")))
+              "next-mention" (lambda (_) (execute-kbd-macro (kbd "C-c g m")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 11)))
              (etaf-telega-gui--action
-              "next-outgoing" (lambda (_) (execute-kbd-macro (kbd "M-g o")))
+              "next-outgoing" (lambda (_) (execute-kbd-macro (kbd "C-c g o")))
               (lambda (_) (equal (plist-get (etaf-telega-gui--info) :selected) 12)))
              (etaf-telega-gui--action
               "app-bar-jump-newest"

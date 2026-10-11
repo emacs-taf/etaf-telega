@@ -630,7 +630,7 @@ Each command operates on the message under point.")
      ("]" ,#'etaf-telega-next-filter "下一个分组")
      ("/" ,#'etaf-telega-search "搜索会话")
      ("s" ,#'etaf-telega-search)
-     ("M-g u" ,#'etaf-telega-next-unread-chat "下一个未读会话")
+     ("C-c g u" ,#'etaf-telega-next-unread-chat "下一个未读会话")
      ("J" ,(etaf-telega--telega-command 'telega-chat-join-by-link) "通过链接加入")
      ("N" ,(etaf-telega--telega-command 'telega-chat-create) "新建会话")
      ("+" ,(etaf-telega--telega-command 'telega-chat-create))
@@ -648,13 +648,13 @@ Each command operates on the message under point.")
      (">" ,#'etaf-telega-jump-newest "跳到最新消息")
      ("M->" ,#'etaf-telega-jump-newest)
      ("M-<" ,#'etaf-telega-load-more "加载更早的历史")
-     ("M-g q" ,#'etaf-telega-jump-quote "跳到被引用的消息")
-     ("M-g p" ,#'etaf-telega-jump-pinned "跳到置顶消息")
-     ("M-g d" ,#'etaf-telega-jump-date "跳到指定日期")
-     ("M-g u" ,#'etaf-telega-next-unread-message "下一条未读消息")
-     ("M-g m" ,#'etaf-telega-next-mention "下一条提及我的消息")
-     ("M-g @" ,#'etaf-telega-next-mention)
-     ("M-g o" ,#'etaf-telega-next-outgoing "下一条我发送的消息")
+     ("C-c g q" ,#'etaf-telega-jump-quote "跳到被引用的消息")
+     ("C-c g p" ,#'etaf-telega-jump-pinned "跳到置顶消息")
+     ("C-c g d" ,#'etaf-telega-jump-date "跳到指定日期")
+     ("C-c g u" ,#'etaf-telega-next-unread-message "下一条未读消息")
+     ("C-c g m" ,#'etaf-telega-next-mention "下一条提及我的消息")
+     ("C-c g @" ,#'etaf-telega-next-mention)
+     ("C-c g o" ,#'etaf-telega-next-outgoing "下一条我发送的消息")
      ("+" ,#'etaf-telega-react "表情回应")
      ("r" ,#'etaf-telega-reply "回复")
      ("e" ,#'etaf-telega-edit "编辑")
@@ -921,7 +921,7 @@ messages the client has not loaded.  A stale answer is dropped."
 
 (defun etaf-telega--open-palette ()
   "Open the ETAF palette of the client's keys after the current event.
-The bar button and menus run it; `?' opens the same palette directly."
+The bar button and menus run it."
   (run-at-time 0 nil
                (lambda ()
                  (when-let* ((runtime (etaf-telega--runtime etaf-telega--buffer)))
@@ -1174,8 +1174,6 @@ history and closes the search."
     (define-key map (kbd "TAB") #'etaf-telega-popover-select)
     (define-key map (kbd "C-c C-e") #'etaf-telega-open-emoji)
     (define-key map (kbd "C-c C-p") #'etaf-telega-open-stickers)
-    (define-key map (kbd "C-g") #'etaf-telega--compose-cancel)
-    (define-key map (kbd "<escape>") #'etaf-telega--compose-cancel)
     map)
   "Composer keys: sent texts, send options, attachments and popovers.")
 
@@ -1559,13 +1557,6 @@ QUERY is an emoji or keyword; an empty one asks for trending stickers."
   (if (etaf-telega-model-popover (etaf-telega--model))
       (etaf-telega-popover-select)
     (etaf-text-input-end)))
-
-(defun etaf-telega--compose-cancel ()
-  "Close the popover, or leave the composer keeping its text."
-  (interactive)
-  (if (etaf-telega-model-popover (etaf-telega--model))
-      (etaf-telega--popover-close)
-    (etaf-text-input-end t)))
 
 (defun etaf-telega-compose ()
   "Start typing in the composer."
