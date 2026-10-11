@@ -528,7 +528,7 @@ as Telega's own attachment commands; the draft still becomes the caption."
       (etaf-telega-open-chat 1)
       (etaf-telega-test--keys "i @al")
       (should (string-search "@alice" (etaf-telega-test--text)))
-      (etaf-telega-test--keys "RET")
+      (etaf-telega-test--keys "C-c C-j")
       (should (equal (etaf-telega-test--info :draft) "@alice "))
       (etaf-telega-test--keys "C-c C-k")
       (etaf-telega-test--keys "i ")

@@ -254,7 +254,7 @@ Each chip clears or toggles its option."
          (append
           (list (etaf-node 'text (list :color (etaf-telega-color :muted)
                                        :font-weight 'bold)
-                           (list (format "%s · C-n/C-p 选择 · RET 插入"
+                           (list (format "%s · C-n/C-p 选择 · RET/C-c C-j 插入"
                                          (or (plist-get popover :title) "")))))
           (cl-loop for item in (plist-get popover :items)
                    for i from 0

@@ -203,7 +203,7 @@
 ;; Move the composer popover's selection up (C-p).
 ;; Function: etaf-telega-popover-select (&optional index)
 ;; Insert or send the composer popover's item INDEX, the current one by
-;; default (RET or a click).
+;; default (RET, C-c C-j or a click).
 ;; Function: etaf-telega-reply ()
 ;; Arm a reply to the message under point; the next send quotes it (r).
 ;; Function: etaf-telega-edit ()

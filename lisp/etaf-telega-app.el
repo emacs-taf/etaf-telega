@@ -1171,7 +1171,7 @@ history and closes the search."
     (define-key map (kbd "RET") #'etaf-telega--compose-return)
     (define-key map (kbd "C-n") #'etaf-telega-popover-next)
     (define-key map (kbd "C-p") #'etaf-telega-popover-previous)
-    (define-key map (kbd "TAB") #'etaf-telega-popover-select)
+    (define-key map (kbd "C-c C-j") #'etaf-telega-popover-select)
     (define-key map (kbd "C-c C-e") #'etaf-telega-open-emoji)
     (define-key map (kbd "C-c C-p") #'etaf-telega-open-stickers)
     map)
