@@ -1,6 +1,6 @@
 # etaf-telega
 
-Emacs 里的 Telegram 客户端：界面用 [ETAF](https://forgejo.vhkd.top/emacs-taf/etaf) 渲染，
+Emacs 里的 Telegram 客户端：界面用 [ETAF](https://github.com/emacs-taf/etaf) 渲染，
 账号、会话与 TDLib 数据库仍由 [Telega](https://github.com/zevlg/telega.el) 持有。
 不是 Telega 前端的补丁，也不是终端 Telegram 的包装。
 
