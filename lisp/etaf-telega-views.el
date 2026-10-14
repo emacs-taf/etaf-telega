@@ -352,8 +352,10 @@ When the details pane would squeeze the chat below it, the list hides.")
   "Width, in columns, of the chat details pane.")
 
 (defun etaf-telega--columns ()
-  "Return the canvas width in columns; the read is reactive."
-  (/ (or (car (etaf-runtime-viewport)) 0) (max 1 (frame-char-width))))
+  "Return the canvas width in columns; the read is reactive.
+The width is the host region's, so the client adapts when a desktop or
+pane embeds it instead of the whole buffer (see `etaf-viewport')."
+  (/ (or (car (etaf-viewport)) 0) (max 1 (frame-char-width))))
 
 (defun etaf-telega--layout ()
   "Return the layout the canvas width selects: `compact' or `split'.
@@ -364,7 +366,7 @@ The read is reactive, so a resize across the threshold switches layouts."
   "Return the list pane width in pixels: MODEL's dragged width or the default.
 The width stays between the minimum and half the canvas."
   (let* ((cw (max 1 (frame-char-width)))
-         (canvas (or (car (etaf-runtime-viewport)) 0))
+         (canvas (or (car (etaf-viewport)) 0))
          (width (or (etaf-value (plist-get model :list-width))
                     (* etaf-telega--list-pane-columns cw))))
     (round (max (* etaf-telega--list-pane-min-columns cw)
@@ -1486,7 +1488,7 @@ two-finger swipe goes back from a chat or switches filter tabs."
                                    :key 'details :model model
                                    :width (list 'ch etaf-telega--details-pane-columns))))))))))
     (etaf-node
-     'flex (list :flex-direction 'column :width 'stretch :height '(vh 100)
+     'flex (list :flex-direction 'column :width 'stretch :height 'stretch
                  ;; The palette owns the inherited ink: without this, plain
                  ;; text such as the composer falls back to the frame's
                  ;; default foreground, which the light palette can render
