@@ -38,8 +38,13 @@
 ;; Tab and the arrows reach every control through ETAF focus; the
 ;; conversation list is one Tab stop roved with the arrows, and RET on a
 ;; conversation carries focus into its composer while q brings it back.  ? opens
-;; the ETAF palette listing the reachable keys with what they do; the app
-;; bar's keyboard button and the menus' 键盘快捷键 item open it too.
+;; read-only searchable help inside this buffer; the app bar's keyboard button
+;; and the menus' 键盘快捷键 item open the same modal. Escape leaves search
+;; editing first, then closes help; an outside click also closes it and restores
+;; focus. Reading commands keep point and focus on the selected row; header
+;; controls and help preserve the message selection, while the composer clears
+;; it. No help buffer or window is created. M-x etaf-palette remains the
+;; separate command-execution surface.
 ;;
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
@@ -63,7 +68,7 @@
 ;; Function: etaf-telega-previous-chat ()
 ;; Move point to the previous conversation in the list (p).
 ;; Function: etaf-telega-next-unread-chat ()
-;; Move to the next conversation with unread messages (M-g u on the list).
+;; Move to the next conversation with unread messages (C-c g u on the list).
 ;; Function: etaf-telega-open-chat (id)
 ;; Replace the list with conversation ID: its newest history page above the
 ;; composer, with point in the composer.  Interactively ID is the
@@ -108,19 +113,19 @@
 ;; Select the open chat's message ID; when it is not loaded, load its page
 ;; first and select it once the page arrives.
 ;; Function: etaf-telega-jump-quote ()
-;; Jump to the message quoted by the message under point (M-g q, or a click
+;; Jump to the message quoted by the message under point (C-c g q, or a click
 ;; on the quote).
 ;; Function: etaf-telega-jump-pinned ()
-;; Jump to the open conversation's pinned message (M-g p).
+;; Jump to the open conversation's pinned message (C-c g p).
 ;; Function: etaf-telega-jump-date (date)
 ;; Jump to the message nearest before DATE, a timestamp; interactively read
-;; a date like 2026-10-05 (M-g d).
+;; a date like 2026-10-05 (C-c g d).
 ;; Function: etaf-telega-next-unread-message ()
-;; Select the next unread message in the open conversation (M-g u).
+;; Select the next unread message in the open conversation (C-c g u).
 ;; Function: etaf-telega-next-mention ()
-;; Select the next loaded message that mentions the account (M-g m).
+;; Select the next loaded message that mentions the account (C-c g m).
 ;; Function: etaf-telega-next-outgoing ()
-;; Select the next message sent by the account (M-g o).
+;; Select the next message sent by the account (C-c g o).
 ;; Function: etaf-telega-chat-search ()
 ;; Search the open conversation (/ in a chat, or the chat header's search
 ;; button): a search field replaces the title, the history shows messages

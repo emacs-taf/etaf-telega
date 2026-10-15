@@ -36,7 +36,7 @@
 (declare-function etaf-telega-back "etaf-telega-app" ())
 (declare-function etaf-telega-react "etaf-telega-app" (id key))
 (declare-function etaf-telega-close-media "etaf-telega-app" ())
-(declare-function etaf-telega--open-palette "etaf-telega-app" ())
+(declare-function etaf-telega--show-help "etaf-telega-app" ())
 (declare-function etaf-telega--client-keys "etaf-telega-app" ())
 (declare-function etaf-telega--list-keys "etaf-telega-app" ())
 (declare-function etaf-telega--chat-keys "etaf-telega-app" ())
@@ -376,7 +376,11 @@ The width stays between the minimum and half the canvas."
   "Return the style of a full-height pane with REF answering KEYS.
 A pane with WIDTH keeps it; one without grows into the remaining width."
   (append (list :ref ref :flex-direction 'column :min-width '(ch 0)
-                :min-height '(lh 0) :keys keys)
+                :min-height '(lh 0) :keys keys
+                :aria-label (pcase ref
+                              ('telega-list-pane "会话列表")
+                              ('telega-chat-pane "消息区")
+                              ('telega-details-pane "对话信息")))
           (if width
               (list :width width :flex-shrink 0)
             (list :flex-grow 1 :flex-basis '(ch 0)))))
@@ -1065,6 +1069,8 @@ channel posts, which carry no avatar gutter."
          (media (and bubble (etaf-telega--media-columns message))))
     (etaf-node
      'flex (list :ref (etaf-telega--ref 'message id)
+                 ;; Reading commands focus rows without adding Tab stops.
+                 :tab-index -1
                  :flex-direction 'column :width 'stretch
                  :padding-top (if (or separator (and gap (not bubble))) '(lh 1) '(lh 0))
                  :background-color (etaf-telega-color :chat-bg))
@@ -1280,8 +1286,8 @@ until the reader scrolls away; reaching its top asks for older messages."
                                                (list "按 ? 查看全部键盘快捷键")))))))
 
 (defun etaf-telega--bar-help ()
-  "Return the app bar button that opens the palette of the pane's keys."
-  (etaf-telega--bar-button 'info "键盘快捷键 (?)" #'etaf-telega--open-palette))
+  "Return the app bar button that opens read-only help for the current pane."
+  (etaf-telega--bar-button 'info "键盘快捷键 (?)" #'etaf-telega--show-help))
 
 (defun etaf-telega--details-section (title children)
   "Return a details section headed by muted TITLE over CHILDREN."
@@ -1496,6 +1502,10 @@ two-finger swipe goes back from a chat or switches filter tabs."
                  :color (etaf-telega-color :ink)
                  :background-color (etaf-telega-color :bg)
                  :keys (etaf-telega--client-keys)
+                 :aria-label "Telegram 客户端"
+                 :help '("会话与消息由 Telega 的 TDLib 后端提供；关闭客户端不注销账号。"
+                         "按键随当前会话列表、消息区或资料栏变化；帮助只读，不发送消息或执行命令。"
+                         "同一 TDLib 数据目录只能由一个实例使用。")
                  :on-swipe #'etaf-telega-swipe)
      (list (etaf-node 'flex (list :flex-direction 'row :width 'stretch
                                   :flex-grow 1 :flex-basis '(lh 0) :min-height '(lh 0))

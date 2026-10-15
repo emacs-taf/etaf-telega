@@ -16,6 +16,11 @@
  "support": [],
  "cases": [
   {
+   "name": "etaf-telega-tests-help-entries-are-read-only",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "Help keys, the info button and both menus show effective pane bindings without executing them, splitting windows or losing focus after search and layered Escape."
+  },
+  {
    "name": "etaf-telega-tests-open-lists-chats-and-close-releases",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Opening shows the account's chats in one buffer; closing kills it."
