@@ -2,8 +2,8 @@
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ETAF contributors
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0") (ebox "3.0.0"))
+;; Version: 0.1.1
+;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0") (ebox "3.0.0") (telega "0.8.0"))
 ;; Keywords: convenience
 ;; URL: https://github.com/emacs-taf/etaf-telega
 
@@ -46,6 +46,11 @@
 ;; it. No help buffer or window is created. M-x etaf-palette remains the
 ;; separate command-execution surface.
 ;;
+;; Function: etaf-telega-doctor ()
+;; Return capability facts for using the Telegram client.  The shape matches
+;; `etaf-install-doctor': :required and :optional lists of
+;; (LABEL AVAILABLE REMEDY).  `telega` comes from MELPA and `telega-server`
+;; is a compiled binary; both are checked, neither is installed here.
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
 ;; Mount the client in its own buffer, show the conversation list and return
@@ -374,6 +379,18 @@
                                            (or load-file-name buffer-file-name))))
 (require 'etaf-telega-app)
 (require 'etaf-telega-backend)
+
+(defun etaf-telega-doctor ()
+  "Return capability facts for the Telegram client.
+The shape matches `etaf-install-doctor': :required and :optional lists of
+(LABEL AVAILABLE REMEDY).  Nothing is installed or changed."
+  (list :required
+        (list (list "telega package" (and (locate-library "telega") t)
+                    "Install Telega from MELPA; the installer registers MELPA, then run M-x package-install telega.")
+              (list "telega-server" (and (executable-find "telega-server") t)
+                    "Build Telega's server against TDLib and put telega-server on exec-path."))
+        :optional nil))
+
 
 (provide 'etaf-telega)
 ;;; etaf-telega.el ends here
