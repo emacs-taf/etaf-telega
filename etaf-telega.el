@@ -2,7 +2,7 @@
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ETAF contributors
-;; Version: 0.1.1
+;; Version: 0.1.2
 ;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0") (ebox "3.0.0") (telega "0.8.0"))
 ;; Keywords: convenience
 ;; URL: https://github.com/emacs-taf/etaf-telega
@@ -374,9 +374,14 @@
 
 ;;; Code:
 
-(add-to-list 'load-path (expand-file-name "lisp"
-                                          (file-name-directory
-                                           (or load-file-name buffer-file-name))))
+;;;###autoload
+(eval-and-compile
+  (add-to-list 'load-path
+               (expand-file-name "lisp"
+                                 (file-name-directory
+                                  (or load-file-name
+                                      (bound-and-true-p byte-compile-current-file)
+                                      buffer-file-name)))))
 (require 'etaf-telega-app)
 (require 'etaf-telega-backend)
 
