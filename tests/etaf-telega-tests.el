@@ -847,6 +847,27 @@ as Telega's own attachment commands; the draft still becomes the caption."
     (etaf-telega-react 11 "👍")
     (should-not (string-search "👍" (etaf-telega-test--text)))))
 
+(ert-deftest etaf-telega-tests-custom-emoji-reaction-renders-and-toggles ()
+  "A custom emoji reaction renders as a chip and toggles by clicking it.
+Its key is the scalar `custom:<id>' form, so the chip row never asks ETAF for
+a compound View key."
+  (let* ((key "custom:6183560906786479310")
+         (backend (etaf-telega-test--backend
+                   nil (etaf-telega-test--histories
+                        (list 1 (list :id 11 :sender "Alice" :time "10:00"
+                                      :text "你好"
+                                      :reactions (list (list :key key :label "✦"
+                                                             :count 3 :chosen nil))))))))
+    (etaf-telega-test--with-client buffer backend
+      (etaf-telega-open-chat 1)
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "✦ 3" text))
+        (should-not (string-search "回调错误" text)))
+      (etaf-telega-test--activate-label (etaf-runtime-for-buffer buffer) "✦ 3")
+      (let ((text (etaf-telega-test--text)))
+        (should (string-search "✦ 4" text))
+        (should-not (string-search "回调错误" text))))))
+
 (ert-deftest etaf-telega-tests-own-messages-align-with-everyone-else ()
   "Outgoing and incoming messages start in the same column."
   (etaf-telega-test--with-client buffer (etaf-telega-test--backend)

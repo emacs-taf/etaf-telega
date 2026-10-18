@@ -236,6 +236,11 @@
    "purpose": "Toggling a reaction shows the emoji on the message and toggling again removes it."
   },
   {
+   "name": "etaf-telega-tests-custom-emoji-reaction-renders-and-toggles",
+   "file": "tests/etaf-telega-tests.el",
+   "purpose": "A custom emoji reaction keyed by a scalar custom:<id> renders as a chip and toggles by clicking it."
+  },
+  {
    "name": "etaf-telega-tests-own-messages-align-with-everyone-else",
    "file": "tests/etaf-telega-tests.el",
    "purpose": "Outgoing and incoming messages share one left-aligned layout."

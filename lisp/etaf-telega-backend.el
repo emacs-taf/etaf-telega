@@ -43,7 +43,9 @@
 ;; :views is a channel post's view count or nil, :reply is
 ;; (:id :sender :kind :text) of the quoted message, :reactions a list of
 ;; (:key :label :count :chosen) in server order and :duration the length in
-;; seconds of video, animation, voice and audio.  A chat's :photo, a message's sender :avatar and its
+;; seconds of video, animation, voice and audio.  A reaction :key is an emoji
+;; string or `custom:<id>' for a custom emoji, so it is always a scalar ETAF View
+;; key.  A chat's :photo, a message's sender :avatar and its
 ;; :media :src are image sources:
 ;; a local file path, an Emacs image descriptor (an in-memory preview), or
 ;; nil.  :media is (:src :width :height) in source pixels for photos, video
@@ -80,7 +82,7 @@
 ;;                                        (:silent :no-preview :at :markdown)
 ;;   (edit BACKEND MESSAGE TEXT)          replace one message's text
 ;;   (read BACKEND MESSAGE-IDS)           accept messages as read
-;;   (react BACKEND MESSAGE-ID KEY)       toggle reaction KEY (an emoji string)
+;;   (react BACKEND MESSAGE-ID KEY)       toggle reaction KEY (emoji or custom:<id>)
 ;;                                        on a message; the change arrives
 ;;                                        as an `:updated' message
 ;;   (media BACKEND MESSAGE-ID CALLBACK)  fetch a message's full media file;
@@ -178,7 +180,8 @@ asks the backend to parse TEXT as Markdown into formatted text.")
   "Accept MESSAGE-IDS in BACKEND's selected chat as read.")
 
 (cl-defgeneric etaf-telega-backend-react (backend message-id key)
-  "Toggle reaction KEY on MESSAGE-ID in BACKEND's selected chat.")
+  "Toggle reaction KEY on MESSAGE-ID in BACKEND's selected chat.
+KEY is an emoji string or `custom:<id>' naming a custom emoji by its TDLib id.")
 
 (cl-defgeneric etaf-telega-backend-media (backend message-id callback)
   "Fetch MESSAGE-ID's full media in BACKEND's selected chat.
@@ -870,12 +873,30 @@ The raw message stays available to Telega's own commands run through
                                       "")))
           :text (or (ignore-errors (telega-msg-content-text message)) ""))))
 
+(defconst etaf-telega-backend-telega--custom-reaction-prefix "custom:"
+  "Prefix of the reaction key naming a custom emoji by its TDLib id.
+An interface reaction key is a scalar ETAF identity, so a custom emoji is
+reported as a `custom:'-prefixed id rather than as an emoji: the id is not a
+glyph.")
+
 (defun etaf-telega-backend-telega--reaction-key (type)
   "Return the interface key of TDLib reaction TYPE, or nil."
   (pcase (plist-get type :@type)
     ("reactionTypeEmoji" (telega-tl-str type :emoji 'no-properties))
-    ("reactionTypeCustomEmoji" (cons 'custom (plist-get type :custom_emoji_id)))
+    ("reactionTypeCustomEmoji"
+     (concat etaf-telega-backend-telega--custom-reaction-prefix
+             (format "%s" (plist-get type :custom_emoji_id))))
     ("reactionTypePaid" 'paid)))
+
+(defun etaf-telega-backend-telega--reaction-label (key)
+  "Return the chip label of interface reaction KEY."
+  (cond ((and (stringp key)
+              (string-prefix-p etaf-telega-backend-telega--custom-reaction-prefix
+                               key))
+         "✦")
+        ((stringp key) key)
+        ((eq key 'paid) "⭐")
+        (t "✦")))
 
 (defun etaf-telega-backend-telega--reactions (message)
   "Return MESSAGE's reactions as (:key :label :count :chosen) plists."
@@ -887,7 +908,7 @@ The raw message stays available to Telega's own commands run through
       (when-let* ((key (etaf-telega-backend-telega--reaction-key
                         (plist-get reaction :type))))
         (push (list :key key
-                    :label (cond ((stringp key) key) ((eq key 'paid) "⭐") (t "✦"))
+                    :label (etaf-telega-backend-telega--reaction-label key)
                     :count (or (plist-get reaction :total_count) 0)
                     :chosen (eq t (plist-get reaction :is_chosen)))
               result)))
@@ -1499,10 +1520,17 @@ accepts it; immediate failures are reported without keeping a half-send."
 TDLib answers with an interaction update, reported as `:updated'."
   (let* ((chat-id (etaf-telega-backend-telega-chat-id backend))
          (raw (etaf-telega-backend-telega--raw backend chat-id message-id))
-         (type (cond ((stringp key) (list :@type "reactionTypeEmoji" :emoji key))
-                     ((eq (car-safe key) 'custom)
+         (custom-p (and (stringp key)
+                        (string-prefix-p
+                         etaf-telega-backend-telega--custom-reaction-prefix key)))
+         (type (cond (custom-p
                       (list :@type "reactionTypeCustomEmoji"
-                            :custom_emoji_id (cdr key)))))
+                            :custom_emoji_id
+                            (substring key
+                                       (length
+                                        etaf-telega-backend-telega--custom-reaction-prefix))))
+                     ((stringp key)
+                      (list :@type "reactionTypeEmoji" :emoji key))))
          (chosen (cl-find key (etaf-telega-backend-telega--reactions raw)
                           :key (lambda (item) (plist-get item :key)) :test #'equal)))
     (etaf-telega-backend-telega--guard

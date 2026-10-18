@@ -1135,8 +1135,10 @@ attachments, such as files and stickers, open through Telega."
       (etaf-telega--goto-ref etaf-telega--buffer (etaf-telega--ref 'message id)))))
 
 (defun etaf-telega-react (id key)
-  "Toggle reaction KEY, an emoji string, on message ID.
-Interactively, pick the reaction for the message under point."
+  "Toggle reaction KEY on message ID.
+KEY is an emoji string, or `custom:<id>' naming a custom emoji by its TDLib
+id; reactions of the message under point toggle by clicking them too.
+Interactively, pick an emoji reaction for the message under point."
   (interactive
    (let ((id (or (etaf-telega--row-at 'message)
                  (user-error "先把光标移到一条消息上"))))

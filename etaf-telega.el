@@ -156,9 +156,9 @@
 ;; Function: etaf-telega-close-media ()
 ;; Close the viewer and return to the conversation.
 ;; Function: etaf-telega-react (id key)
-;; Toggle reaction KEY, an emoji string, on message ID; interactively pick it
-;; for the message under point (+).  Reactions show under the message, and
-;; clicking one toggles it too.
+;; Toggle reaction KEY on message ID, an emoji string or `custom:<id>' naming a
+;; custom emoji; interactively pick an emoji for the message under point (+).
+;; Reactions show under the message, and clicking one toggles it too.
 ;; Function: etaf-telega-native (command)
 ;; Run Telega's COMMAND on the message under point on the chat screen, or on
 ;; the conversation under point on the list.  Keys of the native key
@@ -315,8 +315,9 @@
 ;; Function: etaf-telega-backend-read (backend message-ids)
 ;; Accept MESSAGE-IDS in the selected chat as read.
 ;; Function: etaf-telega-backend-react (backend message-id key)
-;; Toggle reaction KEY, an emoji string, on MESSAGE-ID in the selected chat;
-;; the changed message is reported through `:updated'.
+;; Toggle reaction KEY on MESSAGE-ID in the selected chat, an emoji string or
+;; `custom:<id>' naming a custom emoji; the changed message is reported through
+;; `:updated'.
 ;; Function: etaf-telega-backend-media (backend message-id callback)
 ;; Fetch MESSAGE-ID's full photo, video, animation, sticker, voice, audio or
 ;; document file.  CALLBACK receives (PROGRESS SOURCE): PROGRESS from 0.0 to
