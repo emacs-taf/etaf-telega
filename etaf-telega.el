@@ -2,7 +2,7 @@
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ETAF contributors
-;; Version: 0.1.2
+;; Version: 0.1.3
 ;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0") (ebox "3.0.0") (telega "0.8.0"))
 ;; Keywords: convenience
 ;; URL: https://github.com/emacs-taf/etaf-telega
@@ -393,7 +393,9 @@ The shape matches `etaf-install-doctor': :required and :optional lists of
         (list (list "telega package" (and (locate-library "telega") t)
                     "Install Telega from MELPA; the installer registers MELPA, then run M-x package-install telega.")
               (list "telega-server" (and (executable-find "telega-server") t)
-                    "Build Telega's server against TDLib and put telega-server on exec-path."))
+                    (concat "Install TDLib, then run M-x telega-server-build or build "
+                            "Telega's server manually; put telega-server on exec-path. "
+                            "See https://github.com/zevlg/telega.el#installation.")))
         :optional nil))
 
 
