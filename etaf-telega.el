@@ -51,6 +51,14 @@
 ;; `etaf-install-doctor': :required and :optional lists of
 ;; (LABEL AVAILABLE REMEDY).  `telega` comes from MELPA and `telega-server`
 ;; is a compiled binary; both are checked, neither is installed here.
+;; Function: etaf-telega-login ()
+;; Open Telega so its own authorization flow can ask for the phone number and
+;; code, then reuse that session here.
+;;
+;; Function: etaf-telega-logout ()
+;; Ask for confirmation, then end the Telegram session through Telega's own
+;; logout so the next start asks for the phone number again.
+;;
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
 ;; Mount the client in its own buffer, show the conversation list and return
@@ -383,6 +391,7 @@
                                   (or load-file-name
                                       (bound-and-true-p byte-compile-current-file)
                                       buffer-file-name)))))
+(require 'etaf-telega-account)
 (require 'etaf-telega-app)
 (require 'etaf-telega-backend)
 
