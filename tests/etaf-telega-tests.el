@@ -586,7 +586,8 @@ as Telega's own attachment commands; the draft still becomes the caption."
       (should-not (etaf-telega-test--info :compose))
       (let ((text (etaf-telega-test--text)))
         (should-not (string-search "回复 Alice" text))
-        (should (string-match-p "Alice[ \n]*你好\\(.\\|\n\\)*收到" text))))))
+        ;; 回复以带竖线的引用块呈现，正文在新消息之前。
+        (should (string-match-p "Alice[ \n│]*你好\\(.\\|\n\\)*收到" text))))))
 
 (ert-deftest etaf-telega-tests-edit-replaces-and-cancel-restores-the-draft ()
   "e edits an outgoing message; cancelling an edit restores the old draft."
