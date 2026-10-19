@@ -43,7 +43,7 @@ Emacs 里的 Telegram 客户端：界面用 [ETAF](https://github.com/emacs-taf/
 
 - Emacs 29.1 或更新版本。
 - 提供者检出：`etaf`、`etaf-ui`、`ebox`、`ecss`。把它们放在本仓库旁边
-  （`../etaf` 等），或放进工作区的上级目录（`../../etaf` 等）。
+  （`../etaf` 等），或放进工作区的上级目录（`../etaf` 等）。
 - 真实使用时还需要 `telega` 包与服务端（`telega-server` + TDLib）。安装器会安装
   `telega` 包，但不会编译原生 `telega-server`：先安装 TDLib，再运行
   `M-x telega-server-build`（或按 Telega README 手工构建），把 `telega-server`
