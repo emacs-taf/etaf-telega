@@ -22,6 +22,11 @@
       "purpose": "Opening shows the account's chats in one buffer; closing kills it."
     },
     {
+      "name": "etaf-telega-tests-open-uses-the-application-canvas",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "The client is an ETAF application: it owns no caret or mode line and its canvas is painted from the palette, repainting when the theme switches."
+    },
+    {
       "name": "etaf-telega-tests-filter-shows-matching-chats",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "A filter tab narrows the list and the main tab restores it."

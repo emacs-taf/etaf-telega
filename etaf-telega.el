@@ -2,8 +2,8 @@
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ETAF contributors
-;; Version: 0.1.4
-;; Package-Requires: ((emacs "29.1") (etaf "0.2.1") (etaf-ui "0.1.0") (ebox "3.0.0") (telega "0.8.0"))
+;; Version: 0.1.5
+;; Package-Requires: ((emacs "29.1") (etaf "0.3.0") (etaf-ui "0.2.0") (ebox "3.0.0") (telega "0.8.0"))
 ;; Keywords: convenience
 ;; URL: https://github.com/emacs-taf/etaf-telega
 
@@ -61,13 +61,16 @@
 ;;
 ;; Function: etaf-telega-open ()
 ;;;###autoload (autoload 'etaf-telega-open "etaf-telega" nil t)
-;; Mount the client in its own buffer, show the conversation list and return
-;; the buffer.  Starting uses the configured backend; the Telega backend
-;; starts Telega's server without displaying Telega's own buffers and never
-;; touches the saved account.
+;; Open the client as an ETAF application in its own buffer, show the
+;; conversation list and return the buffer.  The client fills its window
+;; without a mode line, and running this again shows the open client.
+;; Starting uses the configured backend; the Telega backend starts Telega's
+;; server without displaying Telega's own buffers and never touches the saved
+;; account.
 ;; Function: etaf-telega-close ()
 ;;;###autoload (autoload 'etaf-telega-close "etaf-telega" nil t)
 ;; Stop observing the backend, release the runtime and kill the client buffer.
+;; Still reachable as Q inside the client.
 ;;
 ;; Function: etaf-telega-select-filter (key)
 ;; Show the conversations of filter KEY (`main', `important', `online',

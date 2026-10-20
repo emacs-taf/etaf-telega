@@ -138,49 +138,41 @@ The native palette returns nil for background keys, leaving them unpainted."
   "Return the ETAF UI token plist for the active palette.
 The application passes the result to `etaf-theme-provide' before mounting,
 otherwise etaf-ui Components (buttons, badges, inputs, ranges) keep their
-own light defaults and the app looks half-themed.  Keep this list in step
-with the components the app actually uses."
-  (let ((accent (etaf-telega-color :accent))
-        (surface (or (etaf-telega-color :surface) (etaf-telega-color :canvas))))
-    (list :ui-fg (etaf-telega-color :ink)
-          :ui-bg (or (etaf-telega-color :bg) (etaf-telega-color :canvas))
-          :ui-border (etaf-telega-color :border)
-          :ui-muted-fg (etaf-telega-color :muted)
-          :ui-panel-bg (etaf-telega-color :surface-2)
-          :ui-panel-fg (etaf-telega-color :ink)
-          :ui-panel-border (etaf-telega-color :border)
-          :ui-divider-bg (etaf-telega-color :border)
-          :ui-picker-item-bg (etaf-telega-color :surface-2)
-          :ui-picker-item-fg (etaf-telega-color :ink)
-          :ui-picker-item-muted-fg (etaf-telega-color :muted)
-          :ui-search-bg (etaf-telega-color :surface-2)
-          :ui-search-fg (etaf-telega-color :ink)
-          :ui-disabled-fg (etaf-telega-color :muted)
-          :ui-disabled-bg surface
-          :ui-disabled-border (etaf-telega-color :border)
-          :ui-accent accent
-          :ui-accent-fg "#FFFFFF"
-          :ui-accent-soft-bg (etaf-telega-color :accent-soft)
-          :ui-button-primary-fg "#FFFFFF"
-          :ui-button-primary-bg accent
-          :ui-button-secondary-fg accent
-          :ui-button-secondary-bg (etaf-telega-color :accent-soft)
-          :ui-button-ghost-fg (etaf-telega-color :muted)
-          :ui-button-ghost-bg surface
-          :ui-range-track (etaf-telega-color :border)
-          :ui-range-fill accent
-          :ui-success-fg (etaf-telega-color :ok)
-          :ui-success-bg (etaf-telega-color :surface-2)
-          :ui-success-border (etaf-telega-color :border)
-          :ui-danger-fg (etaf-telega-color :muted)
-          :ui-danger-bg (etaf-telega-color :surface-2)
-          :ui-danger-border (etaf-telega-color :border)
-          :ui-warning-fg (etaf-telega-color :muted)
-          :ui-warning-bg (etaf-telega-color :surface-2)
-          :ui-warning-border (etaf-telega-color :border)
-          :ui-info-fg "#FFFFFF"
-          :ui-info-bg accent
-          :ui-info-border accent)))
+own light defaults and the app looks half-themed.  `etaf-ui-theme-tokens'
+derives the catalog tokens; the entries before it keep this client's
+denser, muted presentation of secondary surfaces and warnings."
+  (let* ((bg (or (etaf-telega-color :bg) (etaf-telega-color :canvas)))
+         (surface (or (etaf-telega-color :surface) bg))
+         (panel (or (etaf-telega-color :surface-2) surface))
+         (ink (etaf-telega-color :ink))
+         (muted (etaf-telega-color :muted))
+         (border (etaf-telega-color :border))
+         (accent (etaf-telega-color :accent))
+         (accent-soft (etaf-telega-color :accent-soft)))
+    (append
+     (list :ui-panel-bg panel :ui-panel-fg ink :ui-panel-border border
+           :ui-divider-bg border
+           :ui-picker-item-bg panel :ui-picker-item-fg ink
+           :ui-picker-item-muted-fg muted
+           :ui-search-bg panel :ui-search-fg ink
+           :ui-disabled-bg surface :ui-disabled-border border
+           :ui-button-secondary-bg accent-soft
+           :ui-button-ghost-bg surface
+           :ui-range-track border
+           :ui-success-bg panel
+           :ui-danger-fg muted :ui-danger-bg panel
+           :ui-warning-fg muted :ui-warning-bg panel
+           :ui-info-fg "#FFFFFF" :ui-info-bg accent)
+     (etaf-ui-theme-tokens
+      (list :bg bg :fg ink :panel panel :track border :border border
+            :muted muted :dim muted :accent accent :accent-fg "#FFFFFF"
+            :accent-soft accent-soft
+            :success (etaf-telega-color :ok) :success-bg panel
+            :success-border border
+            :warning muted :warning-bg panel :warning-border border
+            :danger (etaf-telega-color :danger) :danger-bg panel
+            :danger-border border
+            :info accent :info-bg accent :info-border accent)))))
 
 (provide 'etaf-telega-theme)
 ;;; etaf-telega-theme.el ends here

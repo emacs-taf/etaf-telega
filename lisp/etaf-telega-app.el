@@ -1734,6 +1734,16 @@ Leaving an edit restores the draft captured before editing."
 
 ;;;; Information, theme and lifecycle
 
+(defvar etaf-telega--canvas-version (etaf-ref 0)
+  "Counter bumped when the palette changes, so the canvas repaints.")
+
+(defun etaf-telega--canvas (key)
+  "Return the active palette's color KEY for the application canvas.
+The value is re-read when `etaf-telega--canvas-version' changes, because a
+palette switch also repaints the window area around the View."
+  (etaf-value etaf-telega--canvas-version)
+  (etaf-telega-color key))
+
 (defun etaf-telega-info ()
   "Return visible client facts without network I/O."
   (let* ((model etaf-telega--model)
@@ -1766,12 +1776,13 @@ Leaving an edit restores the draft captured before editing."
                             ('dark 'light)
                             ('light 'native)
                             (_ 'dark)))
+  (setf (etaf-value etaf-telega--canvas-version)
+        (1+ (etaf-value etaf-telega--canvas-version)))
   (when-let* ((model etaf-telega--model)
-              (runtime (etaf-telega--runtime etaf-telega--buffer)))
-    (with-current-buffer etaf-telega--buffer
+              (buffer (and (buffer-live-p etaf-telega--buffer) etaf-telega--buffer)))
+    (with-current-buffer buffer
       (let ((point (point)))
-        (etaf-unmount runtime)
-        (etaf-mount etaf-telega--buffer (etaf-view (etaf-telega-app :model model)))
+        (etaf-mount buffer (etaf-view (etaf-telega-app :model model)))
         (goto-char (min point (point-max))))))
   (message "etaf-telega 主题：%s" (etaf-telega--theme-name)))
 
@@ -1779,47 +1790,57 @@ Leaving an edit restores the draft captured before editing."
 (defun etaf-telega-open ()
   "Show the client, starting it when needed, and return its buffer."
   (interactive)
-  (unless (and etaf-telega--model (buffer-live-p etaf-telega--buffer))
+  (if-let* ((buffer (etaf-app-buffer etaf-telega-buffer-name)))
+      (pop-to-buffer-same-window buffer)
     (etaf-telega-close)
-    (let ((buffer (get-buffer-create etaf-telega-buffer-name))
-          (model (etaf-telega-model)))
+    (let* ((model (etaf-telega-model))
+           (buffer nil))
       (setq etaf-telega--model model
             etaf-telega--backend (funcall etaf-telega-backend-create-function)
-            etaf-telega--buffer buffer)
-      ;; The shell is one window tall, so mount where the window is known.
-      (pop-to-buffer-same-window buffer)
-      (etaf-mount buffer (etaf-view (etaf-telega-app :model model)))
+            buffer
+            (etaf-app-open etaf-telega-buffer-name
+                           (etaf-view (etaf-telega-app :model model))
+                           :state model
+                           ;; The View paints its own surfaces; the canvas
+                           ;; colors show in the rows and columns it leaves.
+                           :background (lambda () (etaf-telega--canvas :bg))
+                           :foreground (lambda () (etaf-telega--canvas :ink))
+                           :cursor nil
+                           :on-close #'etaf-telega--dispose))
+      (setq etaf-telega--buffer buffer)
       (with-current-buffer buffer
-        (setq-local cursor-type nil)
-        (add-hook 'post-command-hook #'etaf-telega--track-point nil t)
-        (add-hook 'kill-buffer-hook #'etaf-telega--dispose nil t))
+        (add-hook 'post-command-hook #'etaf-telega--track-point nil t))
       (etaf-telega--show-screen 'root)
-      (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks model))))
-  (pop-to-buffer-same-window etaf-telega--buffer)
-  etaf-telega--buffer)
+      (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks model)))
+    (pop-to-buffer-same-window etaf-telega--buffer)
+    etaf-telega--buffer))
 
 (defun etaf-telega--dispose ()
-  "Stop the backend and release the mounted buffer."
+  "Stop the backend and release the client session.
+The application runtime unmounts the View after this returns."
   (let ((backend etaf-telega--backend)
         (buffer etaf-telega--buffer))
     (setq etaf-telega--model nil
           etaf-telega--backend nil
           etaf-telega--buffer nil)
     (when backend (etaf-telega-backend-stop backend))
-    (when-let* ((runtime (etaf-telega--runtime buffer)))
+    (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when (etaf-text-input-active-p runtime)
-          (etaf-text-input-end t)))
-      (etaf-unmount runtime))))
+        (remove-hook 'post-command-hook #'etaf-telega--track-point t)
+        (when-let* ((runtime (etaf-telega--runtime buffer)))
+          (when (etaf-text-input-active-p runtime)
+            (etaf-text-input-end t)))))))
 
 ;;;###autoload
 (defun etaf-telega-close ()
   "Close the client buffer.
 The backend stops observing without closing Telega's server or account."
   (interactive)
-  (let ((buffer etaf-telega--buffer))
-    (etaf-telega--dispose)
-    (when (buffer-live-p buffer) (kill-buffer buffer))))
+  (if-let* ((buffer (etaf-app-buffer etaf-telega-buffer-name)))
+      (etaf-app-close buffer)
+    (let ((live etaf-telega--buffer))
+      (etaf-telega--dispose)
+      (when (buffer-live-p live) (kill-buffer live)))))
 
 (provide 'etaf-telega-app)
 ;;; etaf-telega-app.el ends here

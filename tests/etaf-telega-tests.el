@@ -1098,5 +1098,23 @@ a compound View key."
             (should (equal (list screen entry selected)
                            (list screen entry (etaf-telega-test--info :selected))))))))))
 
+;; Requires the application runtime: before it the client mounted by hand,
+;; kept a buffer-local caret hook and left the canvas at the default face.
+(ert-deftest etaf-telega-tests-open-uses-the-application-canvas ()
+  "The client is an ETAF application whose canvas follows its palette."
+  (etaf-telega-test--with-client client (etaf-telega-test--backend)
+    (let ((canvas (lambda ()
+                    (plist-get (car (last (alist-get 'default
+                                                     face-remapping-alist)))
+                               :background))))
+      (should (etaf-app-state client))
+      (should-not (buffer-local-value 'mode-line-format client))
+      (should-not (buffer-local-value 'cursor-type client))
+      (let ((before (funcall canvas)))
+        (should (stringp before))
+        (etaf-telega-toggle-theme)
+        (etaf-runtime-flush (etaf-runtime-for-buffer client))
+        (should-not (equal (funcall canvas) before))))))
+
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here
