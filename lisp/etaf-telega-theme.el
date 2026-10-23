@@ -67,6 +67,12 @@ Emacs theme's faces without painting any background of its own.
   "Maintained palettes: semantic colors plus sender accents per theme.
 `:canvas' is the chat background color drawn by gaps and idle rules.")
 
+(defvar etaf-telega--canvas-version (etaf-ref 0)
+  "Palette generation, bumped when the client switches appearance.
+Every palette read goes through `etaf-value' on this cell, so a mounted View
+repaints all of its rows and panes from the new palette instead of keeping the
+colors it rendered with; the application canvas reads it for the same reason.")
+
 (defun etaf-telega--theme-name ()
   "Return the effective palette name: `dark', `light' or `native'."
   (let ((choice etaf-telega-theme))
@@ -110,7 +116,10 @@ tints are blends of the default background with its foreground or links."
                                                   etaf-telega-themes)))))))
 
 (defun etaf-telega--palette ()
-  "Return the effective palette."
+  "Return the active palette.
+The read tracks `etaf-telega--canvas-version', so a render or effect that
+paints a color re-runs after the client switches appearance."
+  (etaf-value etaf-telega--canvas-version)
   (let ((name (etaf-telega--theme-name)))
     (if (eq name 'native)
         (etaf-telega--native-palette)

@@ -64,6 +64,23 @@ M-x etaf-telega-open
 Telega 的 server 与账号数据。首次触达真实账号前先看
 [Telega 的环境说明](#真实账号的边界)。
 
+## 嵌入面板或桌面
+
+`etaf-telega-open` 只是其中一种宿主。已经有自己窗口的调用方直接挂同一个 View：
+
+```elisp
+(require 'etaf-telega)
+(let ((buffer (get-buffer-create "*Telegram*")))
+  (etaf-mount buffer (etaf-telega-view (etaf-telega-create)))
+  buffer)
+```
+
+View 按它所在的区域排版：窗口够宽时是会话列表加对话页，窄窗口自动变成 Telega
+式的单栏；桌面窗口和浮动面板各自按自己的宽度重排。挂载时客户端接管这个 buffer，
+`etaf-telega-info`、各条命令与按键都作用于这次挂载的会话；窗口关闭或面板收起时
+后端停止观察，模型保留会话状态，再次挂载接着用。调色板切换只让这个 View 重画，
+不会重新挂载宿主的 buffer。
+
 ## 按键
 
 按键作用于光标所在的窗格：会话列表、对话页或对话信息栏。打开或离开会话时光标随之进入对应窗格；分栏布局下把光标移到另一个窗格即切换过去。`Tab` / `S-Tab` 和方向键可以走到每个按钮、标签和菜单，`RET` 或空格按下，`Esc` 关闭弹出层。

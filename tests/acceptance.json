@@ -295,6 +295,11 @@
       "name": "etaf-telega-tests-failed-send-clears-the-pending-upload",
       "file": "tests/etaf-telega-tests.el",
       "purpose": "A backend send failure drops the upload strip and keeps the draft."
+    },
+    {
+      "name": "etaf-telega-tests-view-mounts-in-a-host-buffer",
+      "file": "tests/etaf-telega-tests.el",
+      "purpose": "A host mounts the View in its own buffer, the client adopts that buffer so its commands act on the mounted session, and unmounting stops the backend."
     }
   ]
 }

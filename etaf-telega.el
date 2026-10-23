@@ -67,6 +67,23 @@
 ;; Starting uses the configured backend; the Telega backend starts Telega's
 ;; server without displaying Telega's own buffers and never touches the saved
 ;; account.
+;; Function: etaf-telega-create ()
+;;;###autoload (autoload 'etaf-telega-create "etaf-telega" nil t)
+;; Create a client session without mounting it.
+;; The session owns the model and one backend; no request is sent until its
+;; View is mounted by `etaf-telega-open' or by a host of your own.  Every host
+;; gets its own session, and one TDLib data directory still serves one client.
+;;
+;; Function: etaf-telega-view (session)
+;;;###autoload (autoload 'etaf-telega-view "etaf-telega" nil t)
+;; Return SESSION's View for mounting in a host of your own.
+;; The View lays out for the region it is given, so a desktop window or a
+;; floating panel shows the list beside the chat at its own width.  Mounting
+;; adopts the host buffer: the client's commands and keys act on SESSION there,
+;; and the palette switch repaints that View without re-mounting the host's
+;; buffer.  Unmounting stops the backend and forgets the buffer; the session's
+;; model keeps its state, so a host that mounts it again resumes the client.
+;;
 ;; Function: etaf-telega-close ()
 ;;;###autoload (autoload 'etaf-telega-close "etaf-telega" nil t)
 ;; Stop observing the backend, release the runtime and kill the client buffer.

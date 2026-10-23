@@ -1734,9 +1734,6 @@ Leaving an edit restores the draft captured before editing."
 
 ;;;; Information, theme and lifecycle
 
-(defvar etaf-telega--canvas-version (etaf-ref 0)
-  "Counter bumped when the palette changes, so the canvas repaints.")
-
 (defun etaf-telega--canvas (key)
   "Return the active palette's color KEY for the application canvas.
 The value is re-read when `etaf-telega--canvas-version' changes, because a
@@ -1778,13 +1775,56 @@ palette switch also repaints the window area around the View."
                             (_ 'dark)))
   (setf (etaf-value etaf-telega--canvas-version)
         (1+ (etaf-value etaf-telega--canvas-version)))
+  ;; A View mounted by a host repaints from the version cell alone.  The
+  ;; client's own buffer also owns the window area around the View, and those
+  ;; colors come from `etaf-app-open', so that buffer re-mounts.
   (when-let* ((model etaf-telega--model)
-              (buffer (and (buffer-live-p etaf-telega--buffer) etaf-telega--buffer)))
+              (buffer (and (buffer-live-p etaf-telega--buffer) etaf-telega--buffer))
+              ((equal (buffer-name buffer) etaf-telega-buffer-name)))
     (with-current-buffer buffer
       (let ((point (point)))
         (etaf-mount buffer (etaf-view (etaf-telega-app :model model)))
         (goto-char (min point (point-max))))))
   (message "etaf-telega 主题：%s" (etaf-telega--theme-name)))
+
+;;;###autoload
+(defun etaf-telega-create ()
+  "Create a client session without mounting it.
+The session owns the model and one backend; no request is sent until its View
+is mounted by `etaf-telega-open' or a host."
+  (let ((model (etaf-telega-model)))
+    (list :model (plist-put model :backend
+                            (funcall etaf-telega-backend-create-function)))))
+
+;;;###autoload
+(defun etaf-telega-view (session)
+  "Return SESSION's View for mounting in a host of your own.
+The View lays out for the region it is given, so a desktop window or a
+floating panel gets the list beside the chat at its own width.  Mounting
+adopts the host buffer: the client's commands and keys find the session
+there, and unmounting stops the backend."
+  (etaf-view (etaf-telega-app :model (plist-get session :model))))
+
+(defun etaf-telega--adopt (model)
+  "Adopt the buffer that mounted MODEL's View and start the client there."
+  (when-let* ((runtime (etaf-current-runtime))
+              (buffer (and runtime (etaf-runtime-buffer runtime))))
+    (when (buffer-live-p buffer)
+      (setq etaf-telega--model model
+            etaf-telega--backend (plist-get model :backend)
+            etaf-telega--buffer buffer)
+      (with-current-buffer buffer
+        (add-hook 'post-command-hook #'etaf-telega--track-point nil t))
+      (unless (plist-get model :started)
+        (plist-put model :started t)
+        (etaf-telega--show-screen 'root)
+        (etaf-telega-backend-start etaf-telega--backend
+                                   (etaf-telega--callbacks model))))))
+
+(defun etaf-telega--release (model)
+  "Stop MODEL's backend and forget the buffer that showed it."
+  (when (eq model etaf-telega--model)
+    (etaf-telega--dispose)))
 
 ;;;###autoload
 (defun etaf-telega-open ()
@@ -1793,27 +1833,20 @@ palette switch also repaints the window area around the View."
   (if-let* ((buffer (etaf-app-buffer etaf-telega-buffer-name)))
       (pop-to-buffer-same-window buffer)
     (etaf-telega-close)
-    (let* ((model (etaf-telega-model))
-           (buffer nil))
-      (setq etaf-telega--model model
-            etaf-telega--backend (funcall etaf-telega-backend-create-function)
-            buffer
-            (etaf-app-open etaf-telega-buffer-name
-                           (etaf-view (etaf-telega-app :model model))
-                           :state model
-                           ;; The View paints its own surfaces; the canvas
-                           ;; colors show in the rows and columns it leaves.
-                           :background (lambda () (etaf-telega--canvas :bg))
-                           :foreground (lambda () (etaf-telega--canvas :ink))
-                           :cursor nil
-                           :on-close #'etaf-telega--dispose))
+    (let* ((session (etaf-telega-create))
+           (buffer (etaf-app-open etaf-telega-buffer-name
+                                  (etaf-telega-view session)
+                                  :state (plist-get session :model)
+                                  ;; The View paints its own surfaces; the
+                                  ;; canvas colors show in the rows and columns
+                                  ;; it leaves.
+                                  :background (lambda () (etaf-telega--canvas :bg))
+                                  :foreground (lambda () (etaf-telega--canvas :ink))
+                                  :cursor nil
+                                  :on-close #'etaf-telega--dispose)))
       (setq etaf-telega--buffer buffer)
-      (with-current-buffer buffer
-        (add-hook 'post-command-hook #'etaf-telega--track-point nil t))
-      (etaf-telega--show-screen 'root)
-      (etaf-telega-backend-start etaf-telega--backend (etaf-telega--callbacks model)))
-    (pop-to-buffer-same-window etaf-telega--buffer)
-    etaf-telega--buffer))
+      (pop-to-buffer-same-window buffer)
+      buffer)))
 
 (defun etaf-telega--dispose ()
   "Stop the backend and release the client session.

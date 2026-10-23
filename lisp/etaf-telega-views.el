@@ -26,6 +26,8 @@
 (require 'etaf-ui)
 (require 'etaf-telega-theme)
 
+(declare-function etaf-telega--adopt "etaf-telega-app" (model))
+(declare-function etaf-telega--release "etaf-telega-app" (model))
 (declare-function etaf-telega-send "etaf-telega-app" (text))
 (declare-function etaf-telega--keep-draft "etaf-telega-app" (text))
 (declare-function etaf-telega--can-post-p "etaf-telega-app" (chat))
@@ -1446,7 +1448,19 @@ right edge drags to resize it.  The details pane, when switched on, joins
 the chat, hiding the list when the window cannot fit all three, or
 replaces the compact chat.  The media viewer opens over every pane.  A
 two-finger swipe goes back from a chat or switches filter tabs."
-  :setup (etaf-theme-provide (etaf-telega-theme-defaults))
+  :setup
+  (progn
+    ;; The catalog reads this plist through the Theme scope, so it has to track
+    ;; the palette cell: otherwise a switch repaints this client's own rows but
+    ;; leaves shared etaf-ui controls such as the search field at the old look.
+    (etaf-theme-provide
+     (etaf-computed (lambda ()
+                      (etaf-value etaf-telega--canvas-version)
+                      (etaf-telega-theme-defaults))))
+    ;; A host mounts this View without `etaf-app-open', so the client adopts
+    ;; the buffer it renders into and releases it when the host unmounts.
+    (etaf-on-mounted (lambda () (etaf-telega--adopt model)))
+    (etaf-on-unmounted (lambda () (etaf-telega--release model))))
   :bindings ((layout (etaf-computed #'etaf-telega--layout))
              (open (etaf-computed (lambda ()
                                     (and (etaf-value (plist-get model :chat)) t)))))

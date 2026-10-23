@@ -1118,3 +1118,26 @@ a compound View key."
 
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here
+
+(ert-deftest etaf-telega-tests-view-mounts-in-a-host-buffer ()
+  "A host mounts the View, drives the client's commands and releases it.
+The View lays out for the buffer it is given, the client adopts that buffer so
+its commands act on the mounted session, and unmounting stops the backend."
+  (let* ((etaf-telega-backend-create-function
+          (lambda () (etaf-telega-test--backend)))
+         (session (etaf-telega-create))
+         (buffer (generate-new-buffer " *etaf-telega host*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (etaf-mount buffer (etaf-telega-view session))
+          (should (eq buffer (etaf-telega-test--info :buffer)))
+          (should (= 3 (etaf-telega-test--info :chats)))
+          (should (string-search "Alice" (etaf-telega-test--text)))
+          (etaf-telega-open-chat 1)
+          (should (= 1 (etaf-telega-test--info :chat)))
+          (etaf-unmount (etaf-runtime-for-buffer buffer))
+          (should-not (etaf-telega-test--info :buffer)))
+      (when-let* ((runtime (etaf-runtime-for-buffer buffer)))
+        (etaf-unmount runtime))
+      (kill-buffer buffer))))
