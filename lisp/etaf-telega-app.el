@@ -1767,14 +1767,19 @@ palette switch also repaints the window area around the View."
                         t))))
 
 (defun etaf-telega-toggle-theme ()
-  "Cycle the client through the dark, light and native palettes."
+  "Cycle the client through the dark, light and native palettes.
+The choice is written to the client's mode cell, which is also what a panel's
+title-bar switch writes, so both stay one state."
   (interactive)
-  (setq etaf-telega-theme (pcase (etaf-telega--theme-name)
-                            ('dark 'light)
-                            ('light 'native)
-                            (_ 'dark)))
-  (setf (etaf-value etaf-telega--canvas-version)
-        (1+ (etaf-value etaf-telega--canvas-version)))
+  (let ((mode (pcase (etaf-telega--theme-name)
+                ('dark 'light)
+                ('light 'native)
+                (_ 'dark))))
+    (etaf-set-value etaf-telega--theme-mode mode)
+    ;; Keep the next client and the customization UI on the same choice.
+    (setq etaf-telega-theme mode))
+  (etaf-set-value etaf-telega--canvas-version
+                  (1+ (etaf-value etaf-telega--canvas-version)))
   ;; A View mounted by a host repaints from the version cell alone.  The
   ;; client's own buffer also owns the window area around the View, and those
   ;; colors come from `etaf-app-open', so that buffer re-mounts.

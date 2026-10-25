@@ -1453,15 +1453,24 @@ two-finger swipe goes back from a chat or switches filter tabs."
     ;; The catalog reads this plist through the Theme scope, so it has to track
     ;; the palette cell: otherwise a switch repaints this client's own rows but
     ;; leaves shared etaf-ui controls such as the search field at the old look.
-    (etaf-theme-provide
-     (etaf-computed (lambda ()
-                      (etaf-value etaf-telega--canvas-version)
-                      (etaf-telega-theme-defaults))))
+    (etaf-theme-provide theme)
+    ;; One appearance state: a host that frames the client paints its frame,
+    ;; title bar and border from this palette and offers these modes, so its
+    ;; switch and `T' write the same cell and neither can leave the panel on
+    ;; one palette while the messages keep the other.
+    (when-let* ((surface (etaf-surface-host)))
+      (etaf-surface-declare surface :theme theme
+                            :mode etaf-telega--theme-mode
+                            :modes etaf-telega--surface-modes))
     ;; A host mounts this View without `etaf-app-open', so the client adopts
     ;; the buffer it renders into and releases it when the host unmounts.
     (etaf-on-mounted (lambda () (etaf-telega--adopt model)))
     (etaf-on-unmounted (lambda () (etaf-telega--release model))))
-  :bindings ((layout (etaf-computed #'etaf-telega--layout))
+  :bindings ((theme (etaf-computed
+                     (lambda ()
+                       (etaf-value etaf-telega--canvas-version)
+                       (etaf-telega-theme-defaults))))
+             (layout (etaf-computed #'etaf-telega--layout))
              (open (etaf-computed (lambda ()
                                     (and (etaf-value (plist-get model :chat)) t)))))
   :render

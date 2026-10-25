@@ -273,8 +273,11 @@
 ;; Function: etaf-telega-sender-color (name)
 ;; Return the active palette's stable accent color for sender NAME.
 ;; Variable: etaf-telega-theme
-;; Palette selection: `auto' follows the frame's background mode, `dark' and
-;; `light' pin a maintained palette.
+;; Appearance a new client starts with: `auto' follows the frame, or the host
+;; that frames the client, `dark' and `light' pin a maintained palette, and
+;; `native' derives every color from the current Emacs theme.  An open client
+;; keeps the live mode cell that `T' and a panel's title-bar switch both write;
+;; this option only seeds it.
 ;; Variable: etaf-telega-buffer-name
 ;; Buffer name of the mounted client.
 ;; Variable: etaf-telega-split-columns

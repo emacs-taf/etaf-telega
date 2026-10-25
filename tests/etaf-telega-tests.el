@@ -930,17 +930,101 @@ a compound View key."
       (should (equal (car (etaf-telega-backend-fake-natives backend))
                      '(telega-chat-leave 2 nil))))))
 
+(defun etaf-telega-test--painted-row (buffer)
+  "Return (POSITION . BACKGROUND) of BUFFER's first row that paints a fill."
+  (with-current-buffer buffer
+    (let ((pos (point-min))
+          found)
+      (while (and (< pos (point-max)) (not found))
+        (let ((background (plist-get (get-text-property pos 'face) :background)))
+          (when background (setq found (cons pos background))))
+        (setq pos (1+ pos)))
+      found)))
+
+(defun etaf-telega-test--painted-background (buffer position)
+  "Return the background BUFFER paints at POSITION."
+  (with-current-buffer buffer
+    (plist-get (get-text-property position 'face) :background)))
+
+(defun etaf-telega-test--row-painting (buffer color)
+  "Return the first position in BUFFER whose face paints COLOR as background."
+  (with-current-buffer buffer
+    (let ((pos (point-min))
+          found)
+      (while (and (< pos (point-max)) (not found))
+        (when (equal color
+                     (plist-get (get-text-property pos 'face) :background))
+          (setq found pos))
+        (setq pos (1+ pos)))
+      found)))
+
 (ert-deftest etaf-telega-tests-theme-switch-repaints-the-client ()
-  "Toggling the theme swaps the palette and keeps the open chat."
-  (let ((etaf-telega-theme 'dark))
-    (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
-      (etaf-telega-open-chat 1)
-      (let ((dark (etaf-telega-color :bg)))
+  "Toggling the theme repaints the mounted rows and keeps the open chat."
+  (etaf-telega-test--with-client buffer (etaf-telega-test--backend)
+    (etaf-telega-open-chat 1)
+    (let* ((row (etaf-telega-test--painted-row buffer))
+           (mode etaf-telega-theme))
+      (should (cdr row))
+      (etaf-telega-toggle-theme)
+      (should-not (eq mode etaf-telega-theme))
+      (etaf-runtime-flush (etaf-runtime-for-buffer buffer))
+      ;; A cycle can land on a palette the frame already painted; the next
+      ;; switch then has to be visible in the mounted rows.
+      (when (equal (cdr row) (etaf-telega-test--painted-background buffer (car row)))
         (etaf-telega-toggle-theme)
-        (should (eq etaf-telega-theme 'light))
-        (should-not (equal dark (etaf-telega-color :bg)))
-        (should (eq (etaf-telega-test--info :screen) 'chat))
-        (should (string-search "在的" (etaf-telega-test--text)))))))
+        (etaf-runtime-flush (etaf-runtime-for-buffer buffer)))
+      (should-not (equal (cdr row)
+                         (etaf-telega-test--painted-background buffer (car row))))
+      (should (eq (etaf-telega-test--info :screen) 'chat))
+      (should (string-search "在的" (etaf-telega-test--text))))))
+
+(etaf-define-component etaf-telega-test--framing-host (&key surface session)
+  "Provide SURFACE to the client SESSION and render it below."
+  :setup (etaf-surface-provide surface)
+  :render (etaf-telega-view session))
+
+(ert-deftest etaf-telega-tests-declares-its-surface-to-a-host ()
+  "A host frames the client from the surface the client declares.
+Without the declaration a panel's title-bar switch painted the frame chrome
+light while the messages kept the palette they had already painted."
+  (let* ((etaf-telega-backend-create-function
+          (lambda () (etaf-telega-test--backend)))
+         (surface (etaf-surface-create))
+         (session (etaf-telega-create))
+         (buffer (generate-new-buffer " *etaf-telega framing host*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buffer)
+          (etaf-mount buffer
+                      (etaf-view (etaf-telega-test--framing-host
+                                  :surface surface :session session)))
+          (should (equal '((light . "亮") (auto . "随") (dark . "暗"))
+                         (etaf-surface-modes surface)))
+          ;; The client may also hold `native', a palette its host's standard
+          ;; three-mode switch does not offer.
+          (should (memq (etaf-value (etaf-surface-mode surface))
+                        '(auto light dark native)))
+          ;; The host's switch writes the cell the client reads, so every
+          ;; mounted row repaints with the palette of that mode instead of
+          ;; keeping the one it rendered with.
+          (etaf-set-value (etaf-surface-mode surface) 'dark)
+          (etaf-runtime-flush (etaf-runtime-for-buffer buffer))
+          (let ((dark (etaf-telega-color :bg))
+                (pos (etaf-telega-test--row-painting
+                      buffer (etaf-telega-color :bg))))
+            (should pos)
+            (should (equal dark (etaf-telega-test--painted-background buffer pos)))
+            (etaf-set-value (etaf-surface-mode surface) 'light)
+            (etaf-runtime-flush (etaf-runtime-for-buffer buffer))
+            (should-not (equal dark (etaf-telega-color :bg)))
+            (should (equal (etaf-telega-color :bg)
+                           (etaf-telega-test--painted-background buffer pos)))
+            (should (equal (plist-get (etaf-value (etaf-surface-theme surface))
+                                      :ui-bg)
+                           (etaf-telega-color :bg)))))
+      (when-let* ((runtime (etaf-runtime-for-buffer buffer)))
+        (etaf-unmount runtime))
+      (kill-buffer buffer))))
 
 (ert-deftest etaf-telega-tests-search-finds-opens-and-remembers-chats ()
   "/ searches the list; RET opens the first match, which becomes recent."
@@ -1112,9 +1196,10 @@ a compound View key."
       (should-not (buffer-local-value 'cursor-type client))
       (let ((before (funcall canvas)))
         (should (stringp before))
+        (should (equal before (etaf-telega-color :bg)))
         (etaf-telega-toggle-theme)
         (etaf-runtime-flush (etaf-runtime-for-buffer client))
-        (should-not (equal (funcall canvas) before))))))
+        (should (equal (funcall canvas) (etaf-telega-color :bg)))))))
 
 (provide 'etaf-telega-tests)
 ;;; etaf-telega-tests.el ends here

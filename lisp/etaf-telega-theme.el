@@ -5,8 +5,9 @@
 ;;; Commentary:
 ;;
 ;; Two maintained palettes behind one accessor.  `etaf-telega-color' reads the
-;; palette selected by `etaf-telega-theme', so a theme switch can never leak a
-;; half-updated set of colors and every view follows it automatically.
+;; palette selected by the client's live mode cell, so a theme switch can never
+;; leak a half-updated set of colors and every view follows it automatically.
+;; `T' and a panel's title-bar switch write that one cell.
 
 ;;; Code:
 
@@ -14,16 +15,32 @@
 (require 'cl-lib)
 
 (defcustom etaf-telega-theme 'auto
-  "Palette used by the client.
-`auto' follows the frame's background mode; `dark' and `light' pin one of
+  "Appearance a new client starts with.
+`auto' follows the appearance the host provides, which is the frame's
+background mode when the client stands alone; `dark' and `light' pin one of
 the maintained palettes, and `native' derives every color from the current
 Emacs theme's faces without painting any background of its own.
-`etaf-telega-toggle-theme' cycles the three while the client is open."
+The running state is `etaf-telega--theme-mode'; this option only seeds it, so
+`etaf-telega-toggle-theme' and a panel's title-bar switch both write the cell
+the open client paints from."
   :type '(choice (const :tag "Follow the frame" auto)
                  (const :tag "Dark" dark)
                  (const :tag "Light" light)
                  (const :tag "Current Emacs theme" native))
   :group 'etaf-telega)
+
+(defvar etaf-telega--theme-mode (etaf-ref etaf-telega-theme)
+  "Live appearance of the client.
+`T' writes this cell and so does the title-bar switch of a host that frames
+the client, so the client and its panel show one state instead of two.
+`native' is the client's own fourth palette and has no segment in the
+standard three-mode switch.")
+
+(defconst etaf-telega--surface-modes
+  '((light . "亮") (auto . "随") (dark . "暗"))
+  "Appearance modes the client offers its host, in display order.
+They are the standard three a panel's title bar shows, so the client's switch
+reads like every other panel's; `native' stays on `T'.")
 
 (defconst etaf-telega-themes
   '((dark
@@ -74,11 +91,15 @@ repaints all of its rows and panes from the new palette instead of keeping the
 colors it rendered with; the application canvas reads it for the same reason.")
 
 (defun etaf-telega--theme-name ()
-  "Return the effective palette name: `dark', `light' or `native'."
-  (let ((choice etaf-telega-theme))
-    (if (memq choice '(dark light native))
-        choice
-      (if (eq (frame-parameter nil 'background-mode) 'dark) 'dark 'light))))
+  "Return the effective palette name: `dark', `light' or `native'.
+The choice is read from the live mode cell, so a host's switch and a repaint
+of a mounted View never disagree about the palette."
+  (let ((choice (etaf-value etaf-telega--theme-mode)))
+    (cond ((memq choice '(dark light native)) choice)
+          ;; `auto' follows the appearance the host provides, which is the
+          ;; parent frame's polarity inside a panel.
+          ((eq (etaf-appearance) 'dark) 'dark)
+          (t 'light))))
 
 (defun etaf-telega--blend (from to ratio)
   "Return the color RATIO of the way from color FROM to color TO."
