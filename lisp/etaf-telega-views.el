@@ -353,11 +353,19 @@ When the details pane would squeeze the chat below it, the list hides.")
 (defconst etaf-telega--details-pane-columns 44
   "Width, in columns, of the chat details pane.")
 
+(defun etaf-telega--cell ()
+  "Return (CHAR-WIDTH . LINE-HEIGHT) pixels of the canvas being drawn.
+`ch' and `lh' resolve against the canvas's own face, so a text scale keeps the
+grid, the panes and the thumbnails inside the region they measured."
+  (let ((metrics (ignore-errors (etaf-display-metrics))))
+    (cons (max 1 (or (plist-get metrics :char-width) (frame-char-width)))
+          (max 1 (or (plist-get metrics :line-height) (frame-char-height))))))
+
 (defun etaf-telega--columns ()
   "Return the canvas width in columns; the read is reactive.
 The width is the host region's, so the client adapts when a desktop or
 pane embeds it instead of the whole buffer (see `etaf-viewport')."
-  (/ (or (car (etaf-viewport)) 0) (max 1 (frame-char-width))))
+  (/ (or (car (etaf-viewport)) 0) (car (etaf-telega--cell))))
 
 (defun etaf-telega--layout ()
   "Return the layout the canvas width selects: `compact' or `split'.
@@ -367,7 +375,7 @@ The read is reactive, so a resize across the threshold switches layouts."
 (defun etaf-telega--list-pixels (model)
   "Return the list pane width in pixels: MODEL's dragged width or the default.
 The width stays between the minimum and half the canvas."
-  (let* ((cw (max 1 (frame-char-width)))
+  (let* ((cw (car (etaf-telega--cell)))
          (canvas (or (car (etaf-viewport)) 0))
          (width (or (etaf-value (plist-get model :list-width))
                     (* etaf-telega--list-pane-columns cw))))
@@ -863,9 +871,10 @@ replace the tabs and the list."
 (defun etaf-telega--media-grid (media kind)
   "Return (COLUMNS . ROWS) showing MEDIA of KIND at its aspect ratio.
 Photos and videos fit 432x432 pixels and stickers 160x160, measured in the
-frame's character cells so the grid keeps the source's shape."
-  (let* ((cw (max 1 (frame-char-width)))
-         (lh (max 1 (frame-char-height)))
+canvas's character cells so the grid keeps the source's shape."
+  (let* ((cell (etaf-telega--cell))
+         (cw (car cell))
+         (lh (cdr cell))
          (width (max 1 (or (plist-get media :width) 4)))
          (height (max 1 (or (plist-get media :height) 3)))
          (limit (if (eq kind 'sticker) '(160 . 160) '(432 . 432)))
@@ -1302,8 +1311,9 @@ until the reader scrolls away; reaching its top asks for older messages."
 
 (defun etaf-telega--details-media (messages)
   "Return thumbnail rows of the newest photos and videos among MESSAGES."
-  (let* ((cw (max 1 (frame-char-width)))
-         (lh (max 1 (frame-char-height)))
+  (let* ((cell (etaf-telega--cell))
+         (cw (car cell))
+         (lh (cdr cell))
          (columns 10)
          (rows (max 2 (round (/ (* columns cw) (float lh)))))
          (items (seq-take (nreverse (seq-filter
@@ -1478,7 +1488,7 @@ two-finger swipe goes back from a chat or switches filter tabs."
          (open (etaf-value open))
          (details (and open (etaf-value (plist-get model :details))))
          (chat-screen (eq (etaf-value (plist-get model :screen)) 'chat))
-         (cw (max 1 (frame-char-width)))
+         (cw (car (etaf-telega--cell)))
          (columns (etaf-telega--columns))
          (panes
           (if (eq layout 'compact)
